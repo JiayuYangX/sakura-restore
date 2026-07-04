@@ -40,9 +40,9 @@ with open(CSV_IN, 'r', encoding='utf-8') as f:
 
 stats = {'half': 0, 'special': 0}
 for row in rows:
-    orig = row['Text']
+    text = row['Text']
     cleaned = []
-    for ch in orig:
+    for ch in text:
         try:
             ch.encode('gbk')
             cleaned.append(ch)
