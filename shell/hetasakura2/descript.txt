@@ -1,0 +1,5 @@
+type,shell_notinstalled
+name,Ç÷ÇΩÇ≥Ç≠ÇÁ
+craftmanurl,http://www.max.hi-ho.ne.jp/mao_h/
+craftman,Mao Haruna
+craftmanw,êYñºÇ‹Ç®

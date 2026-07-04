@@ -1,0 +1,5 @@
+type,shell_notinstalled
+name,å—Ç¡ñ∫Ç≥Ç≠ÇÁ
+craftmanurl,http://www.din.or.jp/~osayo/
+craftman,Osayo
+craftmanw,Ç®è¨ñÈ

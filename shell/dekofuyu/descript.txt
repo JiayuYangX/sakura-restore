@@ -1,0 +1,5 @@
+type,shell_notinstalled
+name,‚Å‚±‚³‚­‚ç“~•
+craftmanurl,http://www4.plala.or.jp/hituji/index.html
+craftman,Jyu-yon-hitsuji
+craftmanw,\l—r

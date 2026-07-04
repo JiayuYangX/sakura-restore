@@ -1,0 +1,21 @@
+name,‚³‚­‚ç
+id,sakura
+type,ghost
+craftman,Araya Kawakami
+craftmanw,ìãV–é
+craftmanurl,http://sakura.mikage.to/
+
+don't complain,1
+don't need past compatibility,1
+don't need bind,1
+don't need seriko talk,1
+don't need onmousemove,1
+
+
+sakura.name,‚³‚­‚ç
+kero.name,‚¤‚É‚ã‚¤
+
+sstp.allowunspecifiedsend,1
+
+shiori,first.dll
+balloon,twin tail
