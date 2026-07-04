@@ -1,5 +1,6 @@
+charset,UTF-8
 type,shell_notinstalled
-name,‚Å‚±‚³‚­‚ç“~•
+name,ã§ã“ã•ãã‚‰å†¬æœ
 craftmanurl,http://www4.plala.or.jp/hituji/index.html
 craftman,Jyu-yon-hitsuji
-craftmanw,\l—r
+craftmanw,åå››ç¾Š

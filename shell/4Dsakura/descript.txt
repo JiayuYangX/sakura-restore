@@ -1,4 +1,5 @@
+charset,UTF-8
 type,shell_notinstalled
-name,4D‚³‚­‚ç
+name,4Dã•ãã‚‰
 craftmanurl,http://page.freett.com/steppenwolf/
 craftman,SteppenWolf

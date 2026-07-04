@@ -1,9 +1,12 @@
-craftman,Suka
-craftmanw,すか
+charset,UTF-8
+
+name,繝槭せ繧ｿ繝ｼ
 id,WaffleCone
+craftman,Suka
+craftmanw,縺吶°
 type,shell
-name,マスター
 mode,material
+
 sakura.balloon.offsetx,10
 sakura.balloon.offsety,60
 kero.balloon.offsetx,0

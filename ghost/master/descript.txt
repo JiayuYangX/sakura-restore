@@ -1,9 +1,11 @@
-name,‚³‚­‚ç
+charset,UTF-8
+
+name,ã•ãã‚‰
 id,sakura
 type,ghost
-craftman,Araya Kawakami
-craftmanw,ìãV–é
-craftmanurl,http://sakura.mikage.to/
+craftman,Araya Kawakamiï¼›æ±‰åŒ–ï¼šJiayu
+craftmanw,å·ä¸Šæ–°å¤œï¼›æ±‰åŒ–ï¼šå˜‰å®‡
+craftmanurl,https://github.com/JiayuYangX/sakura-restore
 
 don't complain,1
 don't need past compatibility,1
@@ -12,10 +14,13 @@ don't need seriko talk,1
 don't need onmousemove,1
 
 
-sakura.name,‚³‚­‚ç
-kero.name,‚¤‚É‚ã‚¤
+sakura.name,ã•ãã‚‰
+kero.name,ã†ã«ã‚…ã†
 
 sstp.allowunspecifiedsend,1
 
 shiori,first.dll
 balloon,twin tail
+
+shiori.encoding,GBK
+shiori.forceencoding,GBK

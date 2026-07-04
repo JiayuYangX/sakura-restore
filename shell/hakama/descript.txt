@@ -1,5 +1,6 @@
+charset,UTF-8
 type,shell_notinstalled
-name,ŒÑ‚Á–º‚³‚­‚ç
+name,è¢´ã£å¨˜ã•ãã‚‰
 craftmanurl,http://www.din.or.jp/~osayo/
 craftman,Osayo
-craftmanw,‚¨¬–é
+craftmanw,ãŠå°å¤œ

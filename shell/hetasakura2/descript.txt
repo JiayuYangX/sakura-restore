@@ -1,5 +1,6 @@
+charset,UTF-8
 type,shell_notinstalled
-name,‚Ö‚½‚³‚­‚ç
+name,ã¸ãŸã•ãã‚‰
 craftmanurl,http://www.max.hi-ho.ne.jp/mao_h/
 craftman,Mao Haruna
-craftmanw,Y–¼‚Ü‚¨
+craftmanw,æ¦›åã¾ãŠ
