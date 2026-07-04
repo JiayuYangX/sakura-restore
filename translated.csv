@@ -226,7 +226,7 @@ ID,Offset,Length,Text
 225,0x70134,50,\0\s0\1\s0\_sローパフォーマンスマシン殺し開始。\_s
 226,0x70170,4,美耳
 227,0x70180,24,\0\s0\1\s0\_s耳開始。\_s
-228,0x701A4,6,小樱
+228,0x701A4,6,樱花
 229,0x701B4,22,\0\s0\1\s0出直し‥‥？
 230,0x701D4,14,桑巴雨
 231,0x701EC,26,\0\s0\1\s0\_s別人開始。\_s
@@ -282,18 +282,18 @@ ID,Offset,Length,Text
 281,0x7A280,58,\0\s8‥‥\w8\w8データ来ない‥‥\w8\w8\1\s0落ちとるんかな。
 282,0x7A2EC,4,爱理
 283,0x7A2FC,24,歌丸。不是等闲之辈。
-284,0x7A344,10,雄介
+284,0x7A344,10,  雄介
 285,0x7A39C,4,美耳
 286,0x7A3AC,22,耳朵。不是等闲之辈。
 287,0x7A3CC,11,  酷比2
-288,0x7A430,6,小樱
+288,0x7A430,6,樱花
 289,0x7A440,6,老家。
-290,0x7A468,6,斯卡
-291,0x7A490,10,川上新夜
+290,0x7A468,6,  斯卡
+291,0x7A490,10,  川上新夜
 292,0x7A4A4,12,樱御影
 293,0x7A4F4,18,基本操作说明
 294,0x7A520,16,现金卡
-295,0x7A53C,12,小樱卡
+295,0x7A53C,12,樱花卡
 296,0x7A554,16,追加卡
 297,0x7A570,16,信用卡
 298,0x7A58C,22,金积分卡
@@ -302,31 +302,31 @@ ID,Offset,Length,Text
 301,0x7A5F0,20,请让一下
 302,0x7A624,40,MATERIA设置窗口始终前置显示
 303,0x7A66C,8,算了吧
-304,0x7A69C,22,Ghost使用率图
-305,0x7A6FC,22,Balloon使用率图
+304,0x7A69C,22,人格使用率图
+305,0x7A6FC,22,对话框使用率图
 306,0x7A734,18,轻松传话
 307,0x7A760,12,传话
-308,0x7A790,12,小樱的设置
+308,0x7A790,12,樱花的设置
 309,0x7A7B8,16,使用搜索引擎
 310,0x7A7E4,14,今明天气
-311,0x7A80C,14,小樱的Beam
+311,0x7A80C,14,樱花光波
 312,0x7A824,14,和小樱玩游戏
 313,0x7A854,14,推荐网站
 314,0x7A880,8,网惑
 315,0x7A8A4,22,信（中国读作こうかく）
 316,0x7A8E0,10,本体设置
-317,0x7A90C,24,切换到其他Ghost
-318,0x7A948,24,更换小樱的Shell
-319,0x7A984,20,切换Balloon
+317,0x7A90C,24,切换到其他人格
+318,0x7A948,24,更换樱花的外壳
+319,0x7A984,20,切换对话框
 320,0x7A9C4,24,头条传感器状态
 321,0x7A9F8,4,退出
 322,0x7AA08,8,实用
 323,0x7AA1C,8,恐怕
 324,0x7AA30,10,小樱导航
-325,0x7AA44,12,导航小樱
+325,0x7AA44,12,去小樱那
 326,0x7AA70,13,Moon到Phase
 327,0x7AAA0,34,会被敌人发现所以战斗中不用
-328,0x7AAF4,8,最萌
+328,0x7AAF4,8,萌战
 329,0x7AB08,16,小樱打字
 330,0x7AB24,16,打字游戏
 331,0x7AB40,12,小樱问答
@@ -357,13 +357,13 @@ ID,Offset,Length,Text
 356,0x7AE40,10,对时
 357,0x7AE54,26,校准时钟
 358,0x7AE78,12,使用率图
-359,0x7AE90,38,Ghost/Shell/Balloon使用率分布
-360,0x7AEC0,21,Ghost使用率 - 合计
-361,0x7AEE0,38,Ghost使用率分布（全进程合计）
-362,0x7AF10,21,Ghost使用率 - 个别
-363,0x7AF30,20,Ghost使用率分布
-364,0x7AF50,14,Balloon使用率
-365,0x7AF68,20,Balloon使用率分布
+359,0x7AE90,38,人格/外壳/对话框使用率分布
+360,0x7AEC0,21,人格使用率 - 合计
+361,0x7AEE0,38,人格使用率分布（全进程合计）
+362,0x7AF10,21,人格使用率 - 个别
+363,0x7AF30,20,人格使用率分布
+364,0x7AF50,14,对话框使用率
+365,0x7AF68,20,对话框使用率分布
 366,0x7AFA4,57,"\![enter,passivemode]\0\s5視力検査コー\w8ナー。\w8\w8\n\n"
 367,0x7AFE8,75,\s0今から順番に図形を出していくから、どの方向が抜けてるかを答えてね。\w8\w8
 368,0x7B03C,27,\1\s0普通の視力検査やな。\x
@@ -496,13 +496,13 @@ ID,Offset,Length,Text
 495,0x7D720,22,连接邮件服务器～。
 496,0x7D740,22,连接邮件服务器。
 497,0x7D778,25,\0\s0インストール開始。\e
-498,0x7D7D4,26,\0\s0\1\s0\0Ghost\n\n「
+498,0x7D7D4,26,\0\s0\1\s0\0人格\n\n「
 499,0x7D7F8,4,」\n
 500,0x7D814,6,」\n\n
 501,0x7D824,22,インストール完了っ。\e
 502,0x7D844,26,」\n\nインストール完了っ。
-503,0x7D878,24,\0\s0\1\s0\0Shell\n\n「
-504,0x7D8AC,26,\0\s0\1\s0\0Balloon\n\n「
+503,0x7D878,24,\0\s0\1\s0\0外壳\n\n「
+504,0x7D8AC,26,\0\s0\1\s0\0对话框\n\n「
 505,0x7D8D0,28,」\n\nインストール完了っ。\e
 506,0x7D908,28,\0\s0\1\s0\0Plugin\n\n「
 507,0x7D930,14,\0\s0\1\s0\0「
@@ -584,9 +584,9 @@ ID,Offset,Length,Text
 583,0x7EFD0,34,"\![*]\q[小樱视力测试,eyesight]\n"
 584,0x7EFFC,26,"\![*]\q[取消,cancel]"
 585,0x7F060,17,\0\s0哪一个？\n
-586,0x7F07C,52,"\![*]\q[Ghost使用率-合计,rateofusegraphtotal]\n"
-587,0x7F0BC,53,"\![*]\q[Ghost使用率-个别,rateofusegraphsingle]\n"
-588,0x7F0FC,47,"\![*]\q[Balloon使用率,rateofusegraphballoon]\n"
+586,0x7F07C,52,"\![*]\q[人格使用率-合计,rateofusegraphtotal]\n"
+587,0x7F0BC,53,"\![*]\q[人格使用率-个别,rateofusegraphsingle]\n"
+588,0x7F0FC,47,"\![*]\q[对话框使用率,rateofusegraphballoon]\n"
 589,0x7F1B8,20,\b[2]\0\s0何かな？\n
 590,0x7F1D8,22,"\![*]\q[搜索,google]\n"
 591,0x7F1F8,27,"\![*]\q[天气预报,weather]\n"
@@ -759,14 +759,14 @@ ID,Offset,Length,Text
 758,0x833D8,37,"\![*]\q[网络更新,On_Update]\n"
 759,0x83408,41,"\![*]\q[网络更新,On_Update]\_q - "
 760,0x8343C,39,"\![*]\q[本体设置,configurationdialog]\n"
-761,0x8346C,39,"\![*]\q[切换Ghost,ghostexplorer]\n"
-762,0x8349C,37,"\![*]\q[切换Shell,shellexplorer]\n"
-763,0x834CC,41,"\![*]\q[切换Balloon,balloonexplorer]\n"
+761,0x8346C,39,"\![*]\q[切换人格,ghostexplorer]\n"
+762,0x8349C,37,"\![*]\q[切换外壳,shellexplorer]\n"
+763,0x834CC,41,"\![*]\q[切换对话框,balloonexplorer]\n"
 764,0x83500,56,"\![*]\q[头条传感器列表,headlinesensorexplorer]\n"
 765,0x83544,33,"\![*]\q[查邮件,On_BIFF]\n"
 766,0x83570,38,"\![*]\q[使用率图,rateofusegraph]\n"
-767,0x835A0,100,"\![*]\q[前置,stayontop]／\q[普通,!stayontop]\_l[189,-]\![*]\q[重启Windows,On_rebootwindows]\n"
-768,0x83610,72,"\![*]\q[让开,minimize]\_l[202,-]\![*]\q[关闭Windows,On_exitwindows]\n"
+767,0x835A0,100,"\![*]\q[前置,stayontop]／\q[普通,!stayontop]\_l[189,-]\![*]\q[重启 Windows,On_rebootwindows]\n"
+768,0x83610,72,"\![*]\q[让开,minimize]\_l[202,-]\![*]\q[关闭 Windows,On_exitwindows]\n"
 769,0x83664,35,"\![*]\q[不累吗？,sleepylevel]\n"
 770,0x83690,28,"\![*]\q[调试,On_debug]\n"
 771,0x836B8,59,"\![*]\q[取消,cancel]\_l[250,-]\![*]\q[退出,terminate]"
@@ -797,9 +797,9 @@ ID,Offset,Length,Text
 796,0x83DA0,33,\0\s0本当に再起動しちゃうよ？\n\n
 797,0x83DCC,38,"\![*]\q[确定,On_rebootwindows_yes]\n"
 798,0x83E30,32,\b[2]\0\s5お役立ちサイトです。\n
-799,0x83E5C,50,"\![*]\q[小樱导航,On_PortalSelected,sakuranavi]\n"
-800,0x83F44,53,"\![*]\q[去Ghost中心,On_PortalSelected,ngc]\n"
-801,0x83F84,44,"\![*]\q[最萌,On_PortalSelected,saimoe]\n"
+799,0x83E5C,50,"\![*]\q[推荐网站,On_PortalSelected,sakuranavi]\n"
+800,0x83F44,53,"\![*]\q[访问 Ghost Center,On_PortalSelected,ngc]\n"
+801,0x83F84,44,"\![*]\q[萌战,On_PortalSelected,saimoe]\n"
 802,0x841AC,34,\b[0]\0\s5推荐网站。\n
 803,0x841D8,53,"\![*]\q[爱理 - versus NP,On_RecommendSelected,airi]\n"
 804,0x84218,58,"\![*]\q[美耳 - pink revolution,On_RecommendSelected,333]\n"
