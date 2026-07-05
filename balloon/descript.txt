@@ -1,0 +1,61 @@
+type,balloon
+name,twin tail
+id,twin tail
+craftman,cla kusumi
+
+origin.x,23
+origin.y,14
+
+font.name,Sakura YaHei
+font.height,12
+font.color.r,212
+font.color.g,213
+font.color.b,216
+
+anchor.font.color.r,0
+anchor.font.color.g,192
+anchor.font.color.b,0
+cursor.blendmethod,none
+cursor.style,underline
+cursor.brush.color.r,194
+cursor.brush.color.g,197
+cursor.brush.color.b,192
+cursor.pen.color.r,194
+cursor.pen.color.g,197
+cursor.pen.color.b,192
+cursor.font.color.r,194
+cursor.font.color.g,197
+cursor.font.color.b,192
+
+sstpmessage.font.name,Sakura YaHei
+sstpmessage.font.height,9
+sstpmessage.font.color.r,166
+sstpmessage.font.color.g,166
+sstpmessage.font.color.b,170
+
+number.font.name,Arial
+number.font.height,11
+number.font.color.r,166
+number.font.color.g,166
+number.font.color.b,170
+number.xr,-27
+number.y,-14
+
+communicatebox.x,13
+communicatebox.y,14
+communicatebox.width,320
+communicatebox.height,20
+
+arrow0.x,312
+arrow0.y,11
+arrow1.x,312
+arrow1.y,-17
+
+onlinemarker.x,1
+onlinemarker.y,-59
+
+sstpmarker.x,25
+sstpmarker.y,-30
+
+sstpmessage.x,37
+sstpmessage.y,-31

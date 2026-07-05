@@ -1,0 +1,6 @@
+charset,UTF-8
+type,ghost
+name,さくら
+directory,first
+balloon.directory,twin tail
+balloon.source.directory,balloon
