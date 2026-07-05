@@ -13,6 +13,7 @@ CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 # These are embedded strings without FF FF FF FF header.
 MANUAL_ENTRIES = [
     (0x6F57C, 80, '00', 'URL: Geocities -> CompJapan Wikipedia'),
+    (0x7BCA9, 2, '00', 'Full-Width Space')
 ]
 
 
@@ -84,15 +85,7 @@ def extract_dfm_strings(data):
                         pass
             pos += 1
     
-    # Deduplicate by text
-    seen = set()
-    unique = []
-    for off, slen, text in results:
-        if text not in seen:
-            seen.add(text)
-            unique.append((off, slen, text))
-    
-    return unique
+    return results
 
 
 with open(DLL_IN, 'rb') as f:
@@ -114,17 +107,13 @@ assert code_start is not None, 'CODE section not found'
 # 1. Extract marker-based strings (CODE section)
 all_rows = extract_marker_strings(data, code_start, code_end)
 
-# 2. Append manual entries
-for raw_off, max_len, pad, desc in MANUAL_ENTRIES:
-    raw = data[raw_off : raw_off + max_len]
-    text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
-    all_rows.append((raw_off, max_len, pad, text))
-
-# 3. Append DFM entries from .rsrc
+# 2. Append DFM entries from .rsrc
 dfm_rows = extract_dfm_strings(data)
 all_rows += [(off, slen, '00', text) for off, slen, text in dfm_rows]
 
-# 4. Append MS P Gothic font name entries (all .rsrc & CODE), keep original text
+# 3. Append MS P Gothic font name entries (all .rsrc & CODE), keep original text
+# Skip offsets already covered by DFM extraction to avoid duplicates
+existing_offsets = {off for off, _, _, _ in all_rows}
 font_pat = b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e'
 font_rows = []
 pos = 0
@@ -132,11 +121,18 @@ while True:
     i = data.find(font_pat, pos)
     if i == -1:
         break
-    raw = data[i:i+15]
-    text = raw.decode('shift_jis', errors='replace')
-    font_rows.append((i, 15, '00', text))
+    if i not in existing_offsets:
+        raw = data[i:i+15]
+        text = raw.decode('shift_jis', errors='replace')
+        font_rows.append((i, 15, '00', text))
     pos = i + 1
 all_rows += font_rows
+
+# 4. Append manual entries
+for raw_off, max_len, pad, desc in MANUAL_ENTRIES:
+    raw = data[raw_off : raw_off + max_len]
+    text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
+    all_rows.append((raw_off, max_len, pad, text))
 
 # Write CSV
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
@@ -148,4 +144,4 @@ with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
 
 marker_count = len(all_rows) - len(MANUAL_ENTRIES) - len(dfm_rows) - len(font_rows)
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
-print(f'  标记: {marker_count}  手动: {len(MANUAL_ENTRIES)}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')
+print(f'  标记: {marker_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}  手动: {len(MANUAL_ENTRIES)}')

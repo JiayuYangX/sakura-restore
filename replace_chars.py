@@ -29,6 +29,7 @@ SPECIAL_MAP = {
     '\u00B4': '\u0027',  # ´ → '
     '\u266A': '\u007E',  # ♪ → ~
     '\u2200': '\u0041',  # ∀ → A
+    '\u3000': '\u0020\u0020',  # IDEOGRAPHIC SPACE → SPACE
 }
 
 rows = []
@@ -43,18 +44,18 @@ for row in rows:
     text = row['Text']
     cleaned = []
     for ch in text:
-        try:
-            ch.encode('gbk')
-            cleaned.append(ch)
-        except UnicodeEncodeError:
-            if ch in HALF_KANA_MAP:
-                cleaned.append(HALF_KANA_MAP[ch])
-                stats['half'] += 1
-            elif ch in SPECIAL_MAP:
-                cleaned.append(SPECIAL_MAP[ch])
-                stats['special'] += 1
-            else:
-                cleaned.append('?')
+        if ch in HALF_KANA_MAP:
+            cleaned.append(HALF_KANA_MAP[ch])
+            stats['half'] += 1
+        elif ch in SPECIAL_MAP:
+            cleaned.append(SPECIAL_MAP[ch])
+            stats['special'] += 1
+        else:
+            try:
+                ch.encode('gbk')
+                cleaned.append(ch)
+            except UnicodeEncodeError:
+                    cleaned.append('?')
     row['Text'] = ''.join(cleaned)
 
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:

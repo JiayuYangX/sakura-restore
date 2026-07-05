@@ -6,12 +6,25 @@ Writes GBK text at offset (Shift-JIS for special IDs), pads rest with Pad byte i
 """
 import csv, os, sys
 
-SHIFTJIS_IDS = {2357, 2358, 2359}
+SHIFTJIS_IDS = {
+    2366,
+    2367,
+    2368,
+    2387,
+    2388,
+    2389,
+    2390,
+    2391,
+    2392,
+    2393,
+    2394,
+    2395,
+}
 
 BASE = os.path.dirname(__file__)
 DLL_IN = os.path.join(BASE, 'input', 'first.dll')
 CSV_IN = os.path.join(BASE, 'translated.csv')
-DLL_OUT = sys.argv[1] if len(sys.argv) >= 2 else os.path.join(BASE, 'output', 'first.dll')
+DLL_OUT = os.path.join(BASE, 'output', 'first.dll')
 
 with open(DLL_IN, 'rb') as f:
     data = bytearray(f.read())
@@ -31,6 +44,7 @@ for row in rows:
     try:
         raw = text.encode(enc)
     except UnicodeEncodeError:
+        print(f'跳过: ID={row["ID"]} off=0x{off:X} len={length} {enc}={len(raw)} text={repr(text)}')
         skip += 1; continue
 
     off = int(row['Offset'].lstrip('0x'), 16)
@@ -56,4 +70,10 @@ with open(DLL_OUT, 'wb') as f:
     f.write(data)
 
 print(f'写入完成 → {DLL_OUT}')
+if len(sys.argv) >= 2:
+    dst = sys.argv[1]
+    import shutil
+    shutil.copy2(DLL_OUT, dst)
+    print(f'已复制 → {dst}')
+
 print(f'  写入: {ok}  截断: {trunc}  跳过: {skip}')
