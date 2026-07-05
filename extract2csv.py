@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
+"""Extract SJIS strings from first.dll to CSV.
+Offset = text position (marker + 8) for standard entries.
+Manual entries (embedded raw strings) are appended with 'M' prefix IDs.
+"""
 import struct, csv, os
 
 DLL_IN = os.path.join(os.path.dirname(__file__), 'input', 'first.dll')
 CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
+
+# Manual entries: (raw_offset, max_length, description)
+# These are embedded strings without FF FF FF FF header.
+MANUAL_ENTRIES = [
+    (0x6F57C, 80, 'URL: Geocities -> CompJapan Wikipedia'),
+]
 
 with open(DLL_IN, 'rb') as f:
     data = f.read()
@@ -36,7 +46,7 @@ while off < end - 12:
                 off += 4; continue
             text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
             if text:
-                rows.append((off, length, text))
+                rows.append((off + 8, length, text))  # text position
         off += 4
     else:
         off += 1
@@ -47,5 +57,11 @@ with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     w.writerow(['ID', 'Offset', 'Length', 'Text'])
     for i, (off, length, text) in enumerate(rows, 1):
         w.writerow([i, f'0x{off:X}', length, text])
+    # Append manual entries with sequential IDs
+    for raw_off, max_len, desc in MANUAL_ENTRIES:
+        i += 1
+        raw = data[raw_off : raw_off + max_len]
+        text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
+        w.writerow([i, f'0x{raw_off:X}', max_len, text])
 
-print(f'导出 {len(rows)} 条 → {CSV_OUT}')
+print(f'导出 {len(rows)} 条 + {len(MANUAL_ENTRIES)} 条手动条目 → {CSV_OUT}')
