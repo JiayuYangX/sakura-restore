@@ -7,6 +7,8 @@ craftman,Araya Kawakami；汉化：Jiayu
 craftmanw,川上新夜；汉化：嘉宇
 craftmanurl,https://github.com/JiayuYangX/sakura-restore
 
+homeurl,https://jiayuyangx.github.io/sakura-restore/
+
 don't complain,1
 don't need past compatibility,1
 don't need bind,1
