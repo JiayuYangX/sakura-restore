@@ -6,7 +6,7 @@ craftman,cla kusumi
 origin.x,23
 origin.y,14
 
-font.name,Sakura YaHei
+font.name,Sakura Serif
 font.height,12
 font.color.r,212
 font.color.g,213
@@ -27,7 +27,7 @@ cursor.font.color.r,194
 cursor.font.color.g,197
 cursor.font.color.b,192
 
-sstpmessage.font.name,Sakura YaHei
+sstpmessage.font.name,Sakura Serif
 sstpmessage.font.height,9
 sstpmessage.font.color.r,166
 sstpmessage.font.color.g,166
