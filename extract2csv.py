@@ -1,67 +1,151 @@
 #!/usr/bin/env python3
 """Extract SJIS strings from first.dll to CSV.
-Offset = text position (marker + 8) for standard entries.
-Manual entries (embedded raw strings) are appended with 'M' prefix IDs.
+Marker entries (FF FF FF FF header) → CODE section.
+Manual entries (embedded raw strings) → from MANUAL_ENTRIES list.
+DFM entries (TPF0 resource strings) → from .rsrc section.
 """
 import struct, csv, os
 
 DLL_IN = os.path.join(os.path.dirname(__file__), 'input', 'first.dll')
 CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 
-# Manual entries: (raw_offset, max_length, description)
+# Manual entries: (raw_offset, max_length, pad_byte, description)
 # These are embedded strings without FF FF FF FF header.
 MANUAL_ENTRIES = [
-    (0x6F57C, 80, 'URL: Geocities -> CompJapan Wikipedia'),
+    (0x6F57C, 80, '00', 'URL: Geocities -> CompJapan Wikipedia'),
 ]
+
+
+def extract_marker_strings(data, code_start, code_end):
+    """Extract standard strings preceded by FF FF FF FF marker."""
+    rows = []
+    off = code_start
+    while off < code_end - 12:
+        if data[off:off+4] == b'\xff\xff\xff\xff':
+            length = struct.unpack_from('<I', data, off + 4)[0]
+            if 4 <= length <= 800 and off + 8 + length <= code_end:
+                raw = bytes(data[off+8 : off+8+length])
+                has_jp = any(
+                    (0x81 <= raw[j] <= 0x9F or 0xE0 <= raw[j] <= 0xEF)
+                    and (0x40 <= raw[j+1] <= 0x7E or 0x80 <= raw[j+1] <= 0xFC)
+                    for j in range(len(raw) - 1)
+                )
+                if not has_jp:
+                    off += 4; continue
+                text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
+                if text:
+                    rows.append((off + 8, length, '01', text))
+            off += 4
+        else:
+            off += 1
+    return rows
+
+
+def extract_dfm_strings(data):
+    """Extract Japanese strings from TPF0 (Delphi DFM) resources in .rsrc.
+
+    In TPF0, string property values are stored as:
+      \x06 <1B len> <SJIS_text>
+    We extract the text position (after the len byte) with its original SJIS length.
+    """
+    # Find TPF0 headers in .rsrc (last section)
+    rsrc_start = 0xBB000
+    rsrc_end = 0xD9800
+    
+    tpf0s = []
+    off = rsrc_start
+    while off < rsrc_end - 4:
+        if data[off:off+4] == b'TPF0':
+            tpf0s.append(off)
+        off += 1
+    
+    results = []
+    for i, tpf0_off in enumerate(tpf0s):
+        tpf0_end = rsrc_end
+        if i + 1 < len(tpf0s):
+            tpf0_end = tpf0s[i + 1]
+        
+        pos = tpf0_off + 4
+        while pos < tpf0_end - 3:
+            if data[pos] == 0x06:
+                slen = data[pos + 1]
+                if 2 <= slen <= 80 and pos + 2 + slen <= tpf0_end:
+                    raw = data[pos + 2 : pos + 2 + slen]
+                    try:
+                        text = raw.decode('shift_jis')
+                        has_jp = any(0x80 < ord(c) < 0x10000 for c in text)
+                        is_clean = all(
+                            ord(c) >= 0x20 or ord(c) in (0x0A, 0x0D, 0x09)
+                            for c in text
+                        )
+                        if has_jp and is_clean:
+                            results.append((pos + 2, slen, text))
+                    except:
+                        pass
+            pos += 1
+    
+    # Deduplicate by text
+    seen = set()
+    unique = []
+    for off, slen, text in results:
+        if text not in seen:
+            seen.add(text)
+            unique.append((off, slen, text))
+    
+    return unique
+
 
 with open(DLL_IN, 'rb') as f:
     data = f.read()
 
+# Find CODE section range
 e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
 num_sec = struct.unpack_from('<H', data, e_lfanew + 6)[0]
 sec_off = e_lfanew + 0xF8
-code_off = code_size = None
+code_start = code_end = None
 for i in range(num_sec):
     name = bytes(data[sec_off + i*40 : sec_off + i*40 + 8]).rstrip(b'\x00').decode('ascii')
     if name == 'CODE':
-        code_off = struct.unpack_from('<I', data, sec_off + i*40 + 20)[0]
-        code_size = struct.unpack_from('<I', data, sec_off + i*40 + 16)[0]
+        code_start = struct.unpack_from('<I', data, sec_off + i*40 + 20)[0]
+        code_end = code_start + struct.unpack_from('<I', data, sec_off + i*40 + 16)[0]
         break
-assert code_off is not None, 'CODE section not found'
+assert code_start is not None, 'CODE section not found'
 
-rows = []
-off = code_off
-end = code_off + code_size
-while off < end - 12:
-    if data[off:off+4] == b'\xff\xff\xff\xff':
-        length = struct.unpack_from('<I', data, off + 4)[0]
-        if 4 <= length <= 800 and off + 8 + length <= end:
-            raw = bytes(data[off+8 : off+8+length])
-            has_jp = any(
-                (0x81 <= raw[j] <= 0x9F or 0xE0 <= raw[j] <= 0xEF)
-                and (0x40 <= raw[j+1] <= 0x7E or 0x80 <= raw[j+1] <= 0xFC)
-                for j in range(len(raw) - 1)
-            )
-            if not has_jp:
-                off += 4; continue
-            text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
-            if text:
-                rows.append((off + 8, length, text))  # text position
-        off += 4
-    else:
-        off += 1
+# 1. Extract marker-based strings (CODE section)
+all_rows = extract_marker_strings(data, code_start, code_end)
 
+# 2. Append manual entries
+for raw_off, max_len, pad, desc in MANUAL_ENTRIES:
+    raw = data[raw_off : raw_off + max_len]
+    text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
+    all_rows.append((raw_off, max_len, pad, text))
+
+# 3. Append DFM entries from .rsrc
+dfm_rows = extract_dfm_strings(data)
+all_rows += [(off, slen, '00', text) for off, slen, text in dfm_rows]
+
+# 4. Append MS P Gothic font name entries (all .rsrc & CODE), keep original text
+font_pat = b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e'
+font_rows = []
+pos = 0
+while True:
+    i = data.find(font_pat, pos)
+    if i == -1:
+        break
+    raw = data[i:i+15]
+    text = raw.decode('shift_jis', errors='replace')
+    font_rows.append((i, 15, '00', text))
+    pos = i + 1
+all_rows += font_rows
+
+# Write CSV
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['ID', 'Offset', 'Length', 'Text'])
-    for i, (off, length, text) in enumerate(rows, 1):
-        w.writerow([i, f'0x{off:X}', length, text])
-    # Append manual entries with sequential IDs
-    for raw_off, max_len, desc in MANUAL_ENTRIES:
-        i += 1
-        raw = data[raw_off : raw_off + max_len]
-        text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
-        w.writerow([i, f'0x{raw_off:X}', max_len, text])
+    w.writerow(['ID', 'Offset', 'Length', 'Pad', 'Text'])
+    for i, (off, length, pad, text) in enumerate(all_rows, 1):
+        w.writerow([i, f'0x{off:X}', length, pad, text])
 
-print(f'导出 {len(rows)} 条 + {len(MANUAL_ENTRIES)} 条手动条目 → {CSV_OUT}')
+marker_count = len(all_rows) - len(MANUAL_ENTRIES) - len(dfm_rows) - len(font_rows)
+print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
+print(f'  标记: {marker_count}  手动: {len(MANUAL_ENTRIES)}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')
