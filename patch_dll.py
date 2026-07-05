@@ -2,7 +2,7 @@
 import csv, struct, os, sys
 
 BASE = os.path.dirname(__file__)
-DLL_IN = os.path.join(BASE, 'first.dll')
+DLL_IN = os.path.join(BASE, 'input', 'first.dll')
 CSV_IN = os.path.join(BASE, 'translated.csv')
 DLL_OUT = sys.argv[1] if len(sys.argv) >= 2 else os.path.join(BASE, 'output', 'first.dll')
 PAD_BYTE = b'\x01'

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import struct, csv, os
 
-DLL_IN = os.path.join(os.path.dirname(__file__), 'first.dll')
+DLL_IN = os.path.join(os.path.dirname(__file__), 'input', 'first.dll')
 CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 
 with open(DLL_IN, 'rb') as f:
