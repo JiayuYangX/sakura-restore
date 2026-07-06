@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Extract SJIS strings from first.dll to CSV.
 Marker entries (FF FF FF FF header) → CODE section.
-Manual entries (embedded raw strings) → from MANUAL_ENTRIES list.
 DFM entries (TPF0 resource strings) → from .rsrc section.
 """
 import struct, csv, os
@@ -9,32 +8,35 @@ import struct, csv, os
 DLL_IN = os.path.join(os.path.dirname(__file__), 'input', 'first.dll')
 CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 
-# Manual entries: (raw_offset, max_length, pad_byte, description)
-# These are embedded strings without FF FF FF FF header.
-MANUAL_ENTRIES = [
-    (0x6F57C, 80, '00', 'URL: Geocities -> CompJapan Wikipedia'),
+# FFFF entries to include even without Japanese characters
+MANUAL_OFFSETS = [
+    0x6F57C,  # URL: Geocities -> CompJapan Wikipedia
+    0x7E020,  # URL: Search pt1: Google -> Bing
+    0x7E05C,  # URL: Search pt2
 ]
 
-
-def extract_marker_strings(data, code_start, code_end):
-    """Extract standard strings preceded by FF FF FF FF marker."""
+def extract_marker_strings(data, code_start, code_end, force_offsets=None):
+    """Extract standard strings preceded by FF FF FF FF marker.
+    force_offsets: set of data offsets to include even without Japanese text."""
     rows = []
+    force = force_offsets or set()
     off = code_start
     while off < code_end - 12:
         if data[off:off+4] == b'\xff\xff\xff\xff':
             length = struct.unpack_from('<I', data, off + 4)[0]
             if 2 <= length <= 800 and off + 8 + length <= code_end:
                 raw = bytes(data[off+8 : off+8+length])
+                data_off = off + 8
                 has_jp = any(
                     (0x81 <= raw[j] <= 0x9F or 0xE0 <= raw[j] <= 0xEF)
                     and (0x40 <= raw[j+1] <= 0x7E or 0x80 <= raw[j+1] <= 0xFC)
                     for j in range(len(raw) - 1)
                 )
-                if not has_jp:
+                if not has_jp and data_off not in force:
                     off += 4; continue
                 text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
                 if text:
-                    rows.append((off + 8, length, '01', text))
+                    rows.append((data_off, length, '01', text))
             off += 4
         else:
             off += 1
@@ -104,7 +106,7 @@ for i in range(num_sec):
 assert code_start is not None, 'CODE section not found'
 
 # 1. Extract marker-based strings (CODE section)
-all_rows = extract_marker_strings(data, code_start, code_end)
+all_rows = extract_marker_strings(data, code_start, code_end, force_offsets=set(MANUAL_OFFSETS))
 
 # 2. Append DFM entries from .rsrc
 dfm_rows = extract_dfm_strings(data)
@@ -127,12 +129,6 @@ while True:
     pos = i + 1
 all_rows += font_rows
 
-# 4. Append manual entries
-for raw_off, max_len, pad, desc in MANUAL_ENTRIES:
-    raw = data[raw_off : raw_off + max_len]
-    text = raw.split(b'\x00')[0].decode('shift_jis', errors='replace')
-    all_rows.append((raw_off, max_len, pad, text))
-
 # Write CSV
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
@@ -141,6 +137,6 @@ with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     for off, length, pad, text in all_rows:
         w.writerow([f'0x{off:X}', length, pad, text])
 
-marker_count = len(all_rows) - len(MANUAL_ENTRIES) - len(dfm_rows) - len(font_rows)
+marker_count = len(all_rows) - len(dfm_rows) - len(font_rows)
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
-print(f'  标记: {marker_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}  手动: {len(MANUAL_ENTRIES)}')
+print(f'  标记: {marker_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')
