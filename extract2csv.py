@@ -13,7 +13,6 @@ CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 # These are embedded strings without FF FF FF FF header.
 MANUAL_ENTRIES = [
     (0x6F57C, 80, '00', 'URL: Geocities -> CompJapan Wikipedia'),
-    (0x7BCA9, 2, '00', 'Full-Width Space')
 ]
 
 
@@ -24,7 +23,7 @@ def extract_marker_strings(data, code_start, code_end):
     while off < code_end - 12:
         if data[off:off+4] == b'\xff\xff\xff\xff':
             length = struct.unpack_from('<I', data, off + 4)[0]
-            if 4 <= length <= 800 and off + 8 + length <= code_end:
+            if 2 <= length <= 800 and off + 8 + length <= code_end:
                 raw = bytes(data[off+8 : off+8+length])
                 has_jp = any(
                     (0x81 <= raw[j] <= 0x9F or 0xE0 <= raw[j] <= 0xEF)
@@ -138,9 +137,9 @@ for raw_off, max_len, pad, desc in MANUAL_ENTRIES:
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['ID', 'Offset', 'Length', 'Pad', 'Text'])
-    for i, (off, length, pad, text) in enumerate(all_rows, 1):
-        w.writerow([i, f'0x{off:X}', length, pad, text])
+    w.writerow(['Offset', 'Length', 'Pad', 'Text'])
+    for off, length, pad, text in all_rows:
+        w.writerow([f'0x{off:X}', length, pad, text])
 
 marker_count = len(all_rows) - len(MANUAL_ENTRIES) - len(dfm_rows) - len(font_rows)
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
