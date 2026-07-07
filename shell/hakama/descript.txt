@@ -1,6 +1,0 @@
-charset,UTF-8
-type,shell_notinstalled
-name,袴っ娘さくら
-craftmanurl,http://www.din.or.jp/~osayo/
-craftman,Osayo
-craftmanw,お小夜

@@ -1,6 +1,0 @@
-charset,UTF-8
-type,shell_notinstalled
-name,へたさくら
-craftmanurl,http://www.max.hi-ho.ne.jp/mao_h/
-craftman,Mao Haruna
-craftmanw,榛名まお

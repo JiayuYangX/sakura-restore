@@ -1,6 +1,0 @@
-charset,UTF-8
-type,shell_notinstalled
-name,でこさくら冬服
-craftmanurl,http://www4.plala.or.jp/hituji/index.html
-craftman,Jyu-yon-hitsuji
-craftmanw,十四羊
