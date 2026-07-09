@@ -255,7 +255,7 @@ k.CloseHandle(h)
 
 # ---- 写 CSV ----
 outpath = os.path.join(os.path.dirname(__file__) or '.', 'aitxt_extract.csv')
-with open(outpath, 'w', encoding='utf-8-sig', newline='') as f:
+with open(outpath, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
     w.writerow(['Region', 'Offset', 'Outer', 'Inner', 'KeyLen', 'Type', 'Text'])
     for row in all_rows:

@@ -354,7 +354,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x54C0,18,2,3,ctrl,\ms
 1,0x54D0,30,2,12,word,ギリギリchop
 1,0x54EC,22,2,7,ctrl,"\dn,\dg"
-1,0x5500,34,2,18,word,ビッグ・ザ・ブドー
+1,0x5500,34,2,18,word,ビッグ·ザ·ブドー
 1,0x5520,18,2,3,ctrl,\ms
 1,0x5530,22,2,4,word,藤隆
 1,0x5544,18,2,3,ctrl,\ms
@@ -459,7 +459,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x5EB4,22,1,6,dialogue,ちくわ
 1,0x5EC8,22,2,6,word,でじこ
 1,0x5EDC,18,2,3,ctrl,\ms
-1,0x5EEC,134,1,117,dialogue,"ぷちこ,デ・ジ・キャラットは設定上10歳であり、弊社ではデ・ジ・キャラットは性的表現・描写に不適当であると考えます的発想"
+1,0x5EEC,134,1,117,dialogue,"ぷちこ,デ·ジ·キャラットは設定上10歳であり、弊社ではデ·ジ·キャラットは性的表現·描写に不適当であると考えます的発想"
 1,0x5F70,22,2,6,word,ぷちこ
 1,0x5F84,18,2,3,ctrl,\ms
 1,0x5F94,54,1,36,dialogue,"ほっけみりん,でじこ,素敵なさむしんぐ"
@@ -827,7 +827,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x837C,22,2,5,word,=デブ
 1,0x8390,22,2,4,word,佳乃
 1,0x83A4,18,2,3,ctrl,\ms
-1,0x83B4,146,1,130,dialogue,"ポテト,流しソーメン,冷え冷え麦茶,\,通行人をバッサバッサと斬り倒す,邪眼発動,殺意の波動に目覚める,スペースリパー・スティンギーアイズ"
+1,0x83B4,146,1,130,dialogue,"ポテト,流しソーメン,冷え冷え麦茶,\,通行人をバッサバッサと斬り倒す,邪眼発動,殺意の波動に目覚める,スペースリパー·スティンギーアイズ"
 1,0x8444,22,2,6,word,ポテト
 1,0x8458,18,2,3,ctrl,\ms
 1,0x8468,26,1,9,dialogue,"いぬ,佳乃"
@@ -1181,7 +1181,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xA4CC,50,2,34,word,サンライトイエローオーバードライブ
 1,0xA4FC,26,2,11,ctrl,"\dn,\dg,\mt"
 1,0xA514,22,1,6,dialogue,瑠璃子
-1,0xA528,50,2,34,word,スペースリパー・スティンギーアイズ
+1,0xA528,50,2,34,word,スペースリパー·スティンギーアイズ
 1,0xA558,26,2,11,ctrl,"\dn,\dg,\mt"
 1,0xA570,22,1,4,dialogue,佳乃
 1,0xA584,26,2,8,word,現実逃避
@@ -1264,7 +1264,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xABEC,30,2,15,word,=マイクロソフト
 1,0xAC08,26,2,8,word,挙動不審
 1,0xAC20,18,2,2,ctrl,\k
-1,0xAC30,22,1,5,dialogue,ﾄﾞｷｭﾝ
+1,0xAC30,22,1,5,dialogue,"t""kyn"
 1,0xAC44,26,2,8,word,松坂くん
 1,0xAC5C,18,2,3,ctrl,\ms
 1,0xAC6C,50,1,33,dialogue,"女で人生棒にふるタイプ,無免許運転"
@@ -1334,11 +1334,11 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xB264,22,2,5,word,=挿入
 1,0xB278,26,2,8,word,焼き失敗
 1,0xB290,18,2,3,ctrl,\dg
-1,0xB2A0,22,2,5,word,ﾄﾞｷｭﾝ
+1,0xB2A0,22,2,5,word,"t""kyn"
 1,0xB2B4,22,2,6,ctrl,"\ml,\k"
 1,0xB2C8,50,1,34,dialogue,"挙動不審,うぐぅ,真剣十代しゃべり場"
-1,0xB2F8,22,2,5,word,ﾄﾞｷｭｿ
-1,0xB30C,22,2,6,word,=ﾄﾞｷｭﾝ
+1,0xB2F8,22,2,5,word,"t""kys"
+1,0xB30C,22,2,6,word,"=t""kyn"
 1,0xB320,26,2,8,word,ヒッキー
 1,0xB338,22,2,6,ctrl,"\ml,\k"
 1,0xB34C,38,2,22,word,シビリアンコントロール
@@ -1414,10 +1414,10 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xB960,18,2,3,ctrl,\dg
 1,0xB970,26,2,10,word,落ち武者風
 1,0xB988,18,2,2,ctrl,\k
-1,0xB998,46,2,28,word,ヴァッシュ・ザ・スタンピード
+1,0xB998,46,2,28,word,ヴァッシュ·ザ·スタンピード
 1,0xB9C4,18,2,3,ctrl,\ms
 1,0xB9D4,26,1,9,dialogue,0距離射撃
-1,0xB9EC,46,2,30,word,レオノフ・ザ・パペットマスター
+1,0xB9EC,46,2,30,word,レオノフ·ザ·パペットマスター
 1,0xBA18,18,2,3,ctrl,\ms
 1,0xBA28,22,2,7,word,2ちゃん
 1,0xBA3C,22,2,4,word,=2ch
@@ -1480,7 +1480,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xBF64,18,2,2,ctrl,\k
 1,0xBF74,22,2,4,word,粘着
 1,0xBF88,22,2,6,ctrl,"\k,\ml"
-1,0xBF9C,22,2,4,word,㌧㌦
+1,0xBF9C,22,2,4,word,ドルトン
 1,0xBFB0,18,2,2,ctrl,\k
 1,0xBFC0,26,2,8,word,メルヘン
 1,0xBFD8,22,2,6,ctrl,"\k,\ml"
@@ -2050,7 +2050,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x32F18,22,1,4,dialogue,真琴
 1,0x32F2C,130,2,114,word,アニメ声優のラジオ番組における“24時間営業のコンビニのシャッターって何でついているんでしょうか？”というネタハガキ
 1,0x32FAC,18,2,3,ctrl,\mz
-1,0x32FBC,42,2,26,word,＃と♯の違いが分かってない
+1,0x32FBC,42,2,26,word,＃と#の違いが分かってない
 1,0x32FE4,18,2,2,ctrl,\k
 1,0x32FF4,38,2,20,word,マサラタウンのサトシ
 1,0x33018,18,2,3,ctrl,\ms
@@ -2176,7 +2176,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x40A10,26,1,8,dialogue,山崎くん
 1,0x40A28,26,2,9,word,0距離射撃
 1,0x40A40,22,2,7,ctrl,"\dn,\dg"
-1,0x40A54,46,1,28,dialogue,ヴァッシュ・ザ・スタンピード
+1,0x40A54,46,1,28,dialogue,ヴァッシュ·ザ·スタンピード
 1,0x40A80,34,2,16,word,ナースコール連射
 1,0x40AA0,18,2,3,ctrl,\dg
 1,0x40AB0,26,2,10,word,笑顔で殺人
@@ -2184,7 +2184,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x40AD8,34,1,19,dialogue,"雅史ちゃん,大橋巨泉"
 1,0x40AF8,26,2,10,word,世界を革命
 1,0x40B10,18,2,3,ctrl,\dg
-1,0x40B20,42,2,24,word,第5・第6ブロックから浸水
+1,0x40B20,42,2,24,word,第5·第6ブロックから浸水
 1,0x40B48,18,2,3,ctrl,\dg
 1,0x435E4,27,2,8,word,使徒襲来
 1,0x435FC,18,2,3,ctrl,\dg
@@ -2259,7 +2259,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x4915C,22,2,7,ctrl,"\dn,\dg"
 1,0x49170,38,2,20,word,ペドビデオをダビング
 1,0x49194,18,2,3,ctrl,\dg
-1,0x491A4,82,2,64,word,やっとの思いで手に入れたペド・ビデオがソフトコアだったせいで激怒
+1,0x491A4,82,2,64,word,やっとの思いで手に入れたペド·ビデオがソフトコアだったせいで激怒
 1,0x491F4,18,2,3,ctrl,\dg
 1,0x49204,38,2,20,word,リアルすぎて笑えない
 1,0x49228,18,2,2,ctrl,\k
@@ -2305,7 +2305,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x51C18,22,2,6,ctrl,"\k,\dg"
 1,0x51C2C,38,2,22,word,ストレスに負けて首吊り
 1,0x51C50,18,2,3,ctrl,\dg
-1,0x51C60,30,2,12,word,マ・クベの壺
+1,0x51C60,30,2,12,word,マ·クベの壺
 1,0x51C7C,18,2,3,ctrl,\mz
 1,0x51C8C,34,2,19,word,8ビットカラーに減色
 1,0x51CAC,18,2,3,ctrl,\dg
@@ -2440,7 +2440,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x64454,22,1,6,dialogue,久米宏
 1,0x64468,82,2,64,word,自分の本名か本名をアレンジしたHNを使いなさるがよいでしょう的態度
 1,0x644B8,18,2,2,ctrl,\k
-1,0x644C8,46,2,28,word,ガルシニア・クロムダイエット
+1,0x644C8,46,2,28,word,ガルシニア·クロムダイエット
 1,0x644F4,18,2,3,ctrl,\dg
 1,0x64504,42,2,24,word,プラセボ効果に陥りやすい
 1,0x6452C,18,2,2,ctrl,\k
@@ -2510,7 +2510,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x6E048,22,1,6,dialogue,鈴木裕
 1,0x6E05C,54,2,38,word,ベッドの下のエロ本がある日突然なくなる
 1,0x6E090,18,2,3,ctrl,\dg
-1,0x6E0A0,126,2,110,word,デ・ジ・キャラットは設定上10歳であり、弊社ではデ・ジ・キャラットは性的表現・描写に不適当であると考えます的発想
+1,0x6E0A0,126,2,110,word,デ·ジ·キャラットは設定上10歳であり、弊社ではデ·ジ·キャラットは性的表現·描写に不適当であると考えます的発想
 1,0x6E11C,22,2,6,ctrl,"\k,\dg"
 1,0x6E130,22,1,6,dialogue,でじこ
 1,0x6E144,42,2,26,word,見境なくヘッドハンティング
