@@ -6,27 +6,59 @@ extract_csv = os.path.join(BASE, 'aitxt_extract.csv')
 translated_csv = os.path.join(BASE, 'aitxt_translated.csv')
 output_inc = os.path.join(BASE, 'replace_table.inc')
 
-extract = list(csv.DictReader(open(extract_csv, 'r', encoding='utf-8-sig')))
-translated = list(csv.DictReader(open(translated_csv, 'r', encoding='utf-8-sig')))
+with open(extract_csv, 'r', encoding='utf-8-sig') as f:
+    extract = list(csv.DictReader(f))
+with open(translated_csv, 'r', encoding='utf-8-sig') as f:
+    translated = list(csv.DictReader(f))
 
 assert len(extract) == len(translated), f'CSV line count mismatch: {len(extract)} vs {len(translated)}'
 
-entries = []
+pairs = []  # (orig_str, repl_str)
 for e, t in zip(extract, translated):
-    if t['Type'] == 'ctrl':
-        continue
-    # 验证偏移对齐
     assert e['Offset'] == t['Offset'], f'Offset mismatch: {e["Offset"]} vs {t["Offset"]}'
 
+    orig_text = e['Text']
+    repl_text = t['Text']
+
+    # skip control codes
+    if orig_text.startswith('\\'):
+        continue
+
+    if e['Region'] == '1' and e['Inner'] == '1' and ',' in orig_text:
+        # inner=1 (dialogue): split by comma, pair positionally
+        o_parts = [p.strip() for p in orig_text.split(',')]
+        r_parts = [p.strip() for p in repl_text.split(',')]
+        if len(o_parts) != len(r_parts):
+            # fall back to full entry
+            pairs.append((orig_text, repl_text))
+        else:
+            for o, r in zip(o_parts, r_parts):
+                if o:  # non-empty
+                    pairs.append((o, r))
+    else:
+        # inner=2 or single-word inner=1 or R2: full entry
+        pairs.append((orig_text, repl_text))
+
+# deduplicate by original text
+seen = {}
+deduped = []
+for o, r in pairs:
+    if o in seen:
+        continue
+    seen[o] = True
+    deduped.append((o, r))
+
+entries = []
+for o, r in deduped:
     try:
-        orig = e['Text'].encode('cp932')
+        orig = o.encode('cp932')
     except UnicodeEncodeError:
-        print('WARN: cannot cp932 encode [%s]: %s' % (e['Offset'], ascii(e['Text'][:30])))
+        print('WARN: cannot cp932 encode [%s]: %s' % (o, ascii(o[:30])))
         continue
     try:
-        repl = t['Text'].encode('cp936')
+        repl = r.encode('cp936')
     except UnicodeEncodeError:
-        print('WARN: cannot gbk encode [%s]: %s' % (t['Offset'], ascii(t['Text'][:30])))
+        print('WARN: cannot gbk encode [%s]: %s' % (r, ascii(r[:30])))
         continue
 
     if orig == repl:

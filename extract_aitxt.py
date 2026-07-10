@@ -1,16 +1,4 @@
-"""
-从 SSP 进程内存中提取 AITXT 条目到 CSV。
-
-    用法:
-    python extract_aitxt.py [--region2]
-
-    不带参数: 仅提取第一区域（日文对话 + 单词 + 控制符）
-    --region2:  同时提取第二区域
-"""
-
-import ctypes, struct, os, csv, sys
-
-EXTRACT_REGION2 = '--region2' in sys.argv
+import ctypes, struct, os, csv
 
 
 def find_aitxt():
@@ -165,8 +153,8 @@ for off, outer, inner, kl, txt, raw in entries1:
 r1 = sum(1 for r in all_rows if r[0] == 1)
 print(f'第一区域: 提取 {r1} 条')
 
-# ---- 第二区域（可选） ----
-if second_ab and EXTRACT_REGION2:
+# ---- 第二区域 ----
+if second_ab:
     chunks_r2 = []
     addr = second_ab
     while addr < second_ab + 0x100000:
@@ -258,6 +246,6 @@ with open(outpath, 'w', encoding='utf-8', newline='') as f:
 r2 = sum(1 for r in all_rows if r[0] == 2)
 print(f'\n合计: {len(all_rows)} 条 (R1={r1}, R2={r2})')
 print(f'Region 1 基址: 0x{r1_base:08X}')
-if EXTRACT_REGION2 and second_ab:
+if second_ab:
     print(f'Region 2 基址: 0x{r2_base:08X}')
 print(f'保存至: {outpath}')
