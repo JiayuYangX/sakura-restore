@@ -1,19 +1,16 @@
 """
 从 SSP 进程内存中提取 AITXT 条目到 CSV。
 
-用法:
-    python extract_aitxt.py [--region2] [--filter-chinese]
+    用法:
+    python extract_aitxt.py [--region2]
 
-    不带参数:      仅提取第一区域（日文对话 + 单词 + 控制符）
-    --region2:       同时提取第二区域
-    --filter-chinese: 过滤第二区域中的中文条目
+    不带参数: 仅提取第一区域（日文对话 + 单词 + 控制符）
+    --region2:  同时提取第二区域
 """
 
 import ctypes, struct, os, csv, sys
 
-# 开关
 EXTRACT_REGION2 = '--region2' in sys.argv
-FILTER_CHINESE = '--filter-chinese' in sys.argv
 
 
 def find_aitxt():
@@ -80,23 +77,6 @@ def try_parse(data, off):
     return (o, i, kl)
 
 
-def is_chinese(raw):
-    """判断是否为中文（仅用于第二区域）。"""
-    if len(raw) < 4: return False
-    if b'\x01' in raw.rstrip(b'\x00'): return True
-    try:
-        gbk = raw.decode('gbk', errors='replace')
-        cp932 = raw.decode('cp932', errors='replace')
-    except: return False
-    cn = sum(1 for c in gbk if '\u4e00' <= c <= '\u9fff')
-    if cn < 3: return False
-    if '\ufffd' in cp932: return True
-    cn_particles = set('的了吗吧呀嘛呢哈哦嗯啦哟呗咯哩罢哪')
-    if sum(1 for c in gbk if c in cn_particles) >= 2: return True
-    hira = sum(1 for c in cp932 if '\u3040' <= c <= '\u309f')
-    if hira == 0 and any(c in set('，？！。') for c in gbk): return True
-    return False
-
 
 # ---- 主流程 ----
 k = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -106,7 +86,6 @@ ReadProcessMemory = k.ReadProcessMemory
 main_ab, second_ab, pid = find_aitxt()
 s_ab = f'0x{second_ab:08X}' if second_ab else 'N/A'
 print(f'PID={pid}  主区域=0x{main_ab:08X}  第二区域={s_ab}')
-print(f'开关: region2={EXTRACT_REGION2} filter_chinese={FILTER_CHINESE}')
 
 h = k.OpenProcess(0x10 | 0x400, False, pid)
 if not h: raise RuntimeError('无法打开进程')
@@ -175,13 +154,13 @@ for off, outer, inner, kl, txt, raw in entries1:
     offset = va - r1_base
     if inner == 2:
         pending_ctrl = txt_clean.startswith('\\')
-        all_rows.append((1, f'0x{offset:X}', outer, inner, kl,
-                         'ctrl' if pending_ctrl else 'word', txt_clean))
+        if not pending_ctrl:
+            all_rows.append((1, f'0x{offset:X}', outer, inner, kl, txt_clean))
     elif inner == 1 and pending_ctrl:
         pending_ctrl = False
-        all_rows.append((1, f'0x{offset:X}', outer, inner, kl, 'dialogue', txt_clean))
+        all_rows.append((1, f'0x{offset:X}', outer, inner, kl, txt_clean))
     elif inner == 1:
-        pending_ctrl = False  # 孤立 inner=1，跳过
+        pending_ctrl = False
 
 r1 = sum(1 for r in all_rows if r[0] == 1)
 print(f'第一区域: 提取 {r1} 条')
@@ -205,6 +184,14 @@ if second_ab and EXTRACT_REGION2:
     for _, c in chunks_r2: flat_r2.extend(c)
     flat_r2 = bytes(flat_r2)
 
+    def va_to_flat(va, chunks):
+        acc = 0
+        for base, data in chunks:
+            if base <= va < base + len(data):
+                return acc + (va - base)
+            acc += len(data)
+        return None
+
     def flat_to_va_r2(fo):
         acc = 0
         for base, data in chunks_r2:
@@ -215,7 +202,7 @@ if second_ab and EXTRACT_REGION2:
     print(f'第二区域: {len(flat_r2)} 字节, {len(chunks_r2)} 段')
     r2_base = chunks_r2[0][0] + 0x308 if chunks_r2 else 0  # Region 2 条目基址
 
-    # 条目从指针表之后开始
+    # 线性扫描条目区（指针表之后）
     entries2 = []
     off = 0
     if chunks_r2:
@@ -243,12 +230,19 @@ if second_ab and EXTRACT_REGION2:
     print(f'第二区域: {len(entries2)} 原始条目')
     skipped = 0
     for va, outer, inner, kl, txt, raw in entries2:
-        txt_clean = txt.rstrip('\x00')
-        if FILTER_CHINESE and inner == 1 and is_chinese(raw):
+        txt_clean = txt.rstrip('\x00\x01')
+        # 1. contains binary garbage (null bytes or replacement chars)
+        if '\x00' in txt_clean or '\ufffd' in txt_clean:
             skipped += 1; continue
-        t = 'ctrl' if (inner == 2 and txt_clean.startswith('\\')) else f'i{inner}'
+        # 2. halfwidth katakana → rejected (GBK data decoded as cp932)
+        if any('\uff65' <= c <= '\uff9f' for c in txt_clean):
+            skipped += 1; continue
+        # 3. no kana or kanji at all → rejected (process artifact)
+        has_jp = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in txt_clean)
+        if not has_jp:
+            skipped += 1; continue
         offset = va - r2_base
-        all_rows.append((2, f'0x{offset:X}', outer, inner, kl, t, txt_clean))
+        all_rows.append((2, f'0x{offset:X}', outer, inner, kl, txt_clean))
     print(f'第二区域: 提取 {len(entries2) - skipped} 条, 过滤 {skipped} 条')
 
 k.CloseHandle(h)
@@ -257,7 +251,7 @@ k.CloseHandle(h)
 outpath = os.path.join(os.path.dirname(__file__) or '.', 'aitxt_extract.csv')
 with open(outpath, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['Region', 'Offset', 'Outer', 'Inner', 'KeyLen', 'Type', 'Text'])
+    w.writerow(['Region', 'Offset', 'Outer', 'Inner', 'KeyLen', 'Text'])
     for row in all_rows:
         w.writerow(row)
 
