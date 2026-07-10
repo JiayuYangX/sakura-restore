@@ -1,3 +1,5 @@
+charset,UTF-8
+
 type,balloon
 name,twin tail
 id,twin tail
@@ -8,7 +10,7 @@ use_self_alpha,1
 origin.x,23
 origin.y,14
 
-font.name,Sakura Serif
+font.name,宋体
 font.height,12
 font.color.r,212
 font.color.g,213
@@ -29,7 +31,7 @@ cursor.font.color.r,194
 cursor.font.color.g,197
 cursor.font.color.b,192
 
-sstpmessage.font.name,Sakura Serif
+sstpmessage.font.name,宋体
 sstpmessage.font.height,9
 sstpmessage.font.color.r,166
 sstpmessage.font.color.g,166

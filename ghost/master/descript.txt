@@ -22,6 +22,7 @@ kero.name,うにゅう
 sstp.allowunspecifiedsend,1
 
 shiori,first.dll
+makoto,makoto.dll
 balloon,twin tail
 
 shiori.encoding,GBK
