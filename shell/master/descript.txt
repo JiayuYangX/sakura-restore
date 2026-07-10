@@ -7,6 +7,8 @@ craftmanw,すか
 type,shell
 mode,material
 
+seriko.use_self_alpha,1
+
 sakura.balloon.offsetx,10
 sakura.balloon.offsety,60
 kero.balloon.offsetx,0

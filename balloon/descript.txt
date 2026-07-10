@@ -3,6 +3,8 @@ name,twin tail
 id,twin tail
 craftman,cla kusumi
 
+use_self_alpha,1
+
 origin.x,23
 origin.y,14
 
