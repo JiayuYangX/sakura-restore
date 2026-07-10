@@ -479,8 +479,8 @@ Offset,Length,Pad,Text
 0x61344,2,01,く
 0x61350,2,01,つ
 0x6135C,4,01,做
-0x622A0,15,01,Sakura Serif
-0x6236C,15,01,Sakura Serif
+0x622A0,15,00,宋体
+0x6236C,15,00,宋体
 0x63168,27,01,\0\s0记录完成……\w8\w8啦。
 0x6336C,47,01,\t\0\s0嘛，跟备忘录差不多呢……\w8\w8\n\n
 0x633A4,41,01,\1\s0就这些，还挺方便的。\w8\w8
@@ -1400,7 +1400,7 @@ Offset,Length,Pad,Text
 0x867E8,8,01,木野桑
 0x867FC,44,01,\1\s1木野桑有我就够了。\w8\w8\0\s0……
 0x86834,10,01,石松葛兹
-0x86848,72,01,\0\s1……\w8\w8最好别太接近Guts……\w8\w8\1\s0太危险了。
+0x86848,72,01,\0\s1……\w8\w8最好别太接近葛兹……\w8\w8\1\s0太危险了。
 0x868AC,74,01,\0\s8……\w8\w8那种铁狗不需要。\w8\w8\1\s0……\w8\w8总有一天会被捅的。
 0x86910,113,01,\0\s[20]有那玩意的人大概全都错以为自己能干又时尚吧。\w8\w8\1\s0……\w8\w8那是偏见吧。
 0x8698C,8,01,赤堀
@@ -2850,20 +2850,20 @@ Offset,Length,Pad,Text
 0xAAF3C,102,01,听好了——人字加几笔就变成犬了——所以你们说不定是烂橘子——
 0xAB0C8,30,01,"\![enter,passivemode]\0\s0嗯？"
 0xAB0F0,40,01,"\![enter,passivemode]\0\s0嗯。\w8\w8啥？"
-0xD4C65,15,00,Sakura Serif
-0xD4EB9,15,00,Sakura Serif
-0xD5111,15,00,Sakura Serif
+0xD4C65,15,00,宋体
+0xD4EB9,15,00,宋体
+0xD5111,15,00,宋体
 0xD5251,4,00,设置
 0xD5299,12,00,AS技术
 0xD5361,10,00,教程(&T)
-0xD5450,15,00,Sakura Serif
-0xD5628,15,00,Sakura Serif
-0xD5805,15,00,Sakura Serif
-0xD59E3,15,00,Sakura Serif
+0xD5450,15,00,宋体
+0xD5628,15,00,宋体
+0xD5805,15,00,宋体
+0xD59E3,15,00,宋体
 0xD5BFF,10,00,教程(&T)
-0xD5CF8,15,00,Sakura Serif
-0xD6877,15,00,Sakura Serif
-0xD6A39,15,00,Sakura Serif
+0xD5CF8,15,00,宋体
+0xD6877,15,00,宋体
+0xD6A39,15,00,宋体
 0xD6B5B,6,00,语言
 0xD6BB0,8,00,多
 0xD6BF0,12,00,説話頻率(&A)
@@ -2882,10 +2882,10 @@ Offset,Length,Pad,Text
 0xD71E9,6,00,其他
 0xD7242,18,00,标题修改
 0xD731B,10,00,提示(&T)
-0xD7423,15,00,Sakura Serif
-0xD76EC,15,00,Sakura Serif
-0xD7A07,15,00,Sakura Serif
-0xD7D16,15,00,Sakura Serif
+0xD7423,15,00,宋体
+0xD76EC,15,00,宋体
+0xD7A07,15,00,宋体
+0xD7D16,15,00,宋体
 0xD7E4E,2,00,月
 0xD7E8C,8,00,日／毎週
 0xD7ED1,2,00,時
@@ -2897,15 +2897,15 @@ Offset,Length,Pad,Text
 0xD806F,4,00,星期
 0xD8582,8,00,删除(&D)
 0xD85E7,10,00,教程(&T)
-0xD86D1,15,00,Sakura Serif
-0xD88B0,15,00,Sakura Serif
-0xD8AE4,15,00,Sakura Serif
+0xD86D1,15,00,宋体
+0xD88B0,15,00,宋体
+0xD8AE4,15,00,宋体
 0xD8D9F,8,00,删除(&D)
 0xD8E05,10,00,教程(&T)
-0xD8F00,15,00,Sakura Serif
-0xD9143,15,00,Sakura Serif
+0xD8F00,15,00,宋体
+0xD9143,15,00,宋体
 0xD925A,18,00,First Staff
-0xD929A,15,00,Sakura Serif
-0x27ADD,15,00,Sakura Serif
-0x68F38,15,00,Sakura Serif
-0x69940,15,00,Sakura Serif
+0xD929A,15,00,宋体
+0x27ADD,15,00,宋体
+0x68F38,15,00,宋体
+0x69940,15,00,宋体

@@ -537,7 +537,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x6644,18,2,3,ctrl,\ms
 1,0x6654,22,2,4,word,名雪
 1,0x6668,18,2,3,ctrl,\ms
-1,0x6678,146,1,128,dialogue,"草莓圣代,大眼蛙,猫耳,-,国府田麻理子,-,秋子女士,步,祐一,SMAP中森君的立场,演艺界中Kent Derricott的立场"
+1,0x6678,146,1,128,dialogue,"草莓圣代,大眼蛙,猫耳,-,国府田麻理子,-,秋子女士,步,祐一,SMAP中森君的立场,演艺界中肯特·德里科特的立场"
 1,0x6708,22,2,4,word,猫耳
 1,0x671C,18,2,3,ctrl,\ml
 1,0x672C,54,1,38,dialogue,"斯比奈鲁,托罗,名雪,猫猫子,心血来潮"
@@ -2592,7 +2592,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x74C70,18,2,2,ctrl,\k
 1,0x74C80,42,2,24,word,SMAP中森君的立场
 1,0x74CA8,18,2,2,ctrl,\k
-1,0x74CB8,54,2,38,word,演艺界中Kent Derricott的立场
+1,0x74CB8,54,2,38,word,演艺界中肯特·德里科特的立场
 1,0x78078,55,2,36,word,"""我方主唱，以外全部招募""的想法"
 1,0x780AC,22,2,6,ctrl,"\k,\dg"
 1,0x780C0,86,2,71,word,"""来做像Kanon一样的游戏吧。我方程序员，其他全部招募""的想法"
@@ -2633,7 +2633,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0x7BB10,22,2,7,ctrl,"\dg,\dw"
 1,0x7BB24,34,2,18,word,无限接近正圆
 1,0x7BB44,18,2,2,ctrl,\k
-1,0x7BB54,106,2,89,word,明明说了3次「别把汤田当傻瓜～」却还被把汤田当傻瓜时的Derricott
+1,0x7BB54,106,2,89,word,明明说了3次「别涮拿犹他州开涮～」却依然被拿犹他州开涮时的德里科特
 1,0x7BBBC,22,2,6,ctrl,"\ms,\k"
 1,0x7BBD0,30,2,14,word,欧西里斯综合征
 1,0x7F078,19,2,2,ctrl,\k
@@ -3125,7 +3125,7 @@ Region,Offset,Outer,Inner,KeyLen,Type,Text
 1,0xCE874,18,2,3,ctrl,\mz
 1,0xD2810,51,2,34,word,Yawara酱脸上发出的瘴气
 1,0xD2840,18,2,3,ctrl,\mz
-1,0xD2850,82,2,66,word,以为说点怪英语就能变得有趣的Guts石松
+1,0xD2850,82,2,66,word,以为说点怪英语就能变得有趣的石松葛兹
 1,0xD28A0,18,2,3,ctrl,\ms
 1,0xD28B0,42,2,24,word,没干劲也有个度
 1,0xD28D8,18,2,2,ctrl,\k
