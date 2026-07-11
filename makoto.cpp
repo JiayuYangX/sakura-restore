@@ -153,7 +153,6 @@ extern "C" __declspec(dllexport) HGLOBAL __cdecl request(HGLOBAL h, long* len)
             }
         }
         if (!hit) {
-            if ((unsigned char)gbk[i] == 0x01) { i++; continue; }
             if (rpos + 1 > cap) {
                 cap = cap * 2 + 1;
                 rep = (char*)realloc(rep, cap);

@@ -36,7 +36,7 @@ def extract_marker_strings(data, code_start, code_end, force_offsets=None):
                     off += 4; continue
                 text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
                 if text:
-                    rows.append((data_off, length, '01', text))
+                    rows.append((data_off, length, 'code', text))
             off += 4
         else:
             off += 1
@@ -81,7 +81,7 @@ def extract_dfm_strings(data):
                             for c in text
                         )
                         if has_jp and is_clean:
-                            results.append((pos + 2, slen, text))
+                            results.append((pos + 2, slen, 'rsrc', text))
                     except:
                         pass
             pos += 1
@@ -110,9 +110,9 @@ all_rows = extract_marker_strings(data, code_start, code_end, force_offsets=set(
 
 # 2. Append DFM entries from .rsrc
 dfm_rows = extract_dfm_strings(data)
-all_rows += [(off, slen, '00', text) for off, slen, text in dfm_rows]
+all_rows += [(off, slen, typ, text) for off, slen, typ, text in dfm_rows]
 
-# 3. Append MS P Gothic font name entries (all .rsrc & CODE), keep original text
+# 3. Append MS P Gothic font name entries (all .rsrc & CODE)
 # Skip offsets already covered by DFM extraction to avoid duplicates
 existing_offsets = {off for off, _, _, _ in all_rows}
 font_pat = b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e'
@@ -125,7 +125,7 @@ while True:
     if i not in existing_offsets:
         raw = data[i:i+15]
         text = raw.decode('shift_jis', errors='replace')
-        font_rows.append((i, 15, '00', text))
+        font_rows.append((i, 15, 'font', text))
     pos = i + 1
 all_rows += font_rows
 
@@ -133,9 +133,9 @@ all_rows += font_rows
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['Offset', 'Length', 'Pad', 'Text'])
-    for off, length, pad, text in all_rows:
-        w.writerow([f'0x{off:X}', length, pad, text])
+    w.writerow(['Offset', 'Length', 'Type', 'Text'])
+    for off, length, typ, text in all_rows:
+        w.writerow([f'0x{off:X}', length, typ, text])
 
 marker_count = len(all_rows) - len(dfm_rows) - len(font_rows)
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')

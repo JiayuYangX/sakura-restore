@@ -48,7 +48,7 @@ foreach ($f in $RedOnes) {
     Write-Host "  ($i/$($RedOnes.Count)) $($f.Name) (红 #FF0000)"
     Remove-Background $f.FullName "#FF0000"
     if ($f.Name -notin $NoEdge) {
-        Remove-WhiteEdge $f.FullName
+        # Remove-WhiteEdge $f.FullName
     }
 }
 
