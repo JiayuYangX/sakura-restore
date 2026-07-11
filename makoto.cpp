@@ -29,11 +29,12 @@ static void ensure_entries() {
 
 static int cp_from_charset(const char* p, int len) {
     struct { const char* n; int nl; int cp; } tbl[] = {
-        {"UTF-8", 5, 65001}, {"utf-8", 5, 65001},
-        {"Shift_JIS", 9, 932}, {"shift_jis", 9, 932},
-        {"SJIS", 4, 932},
-        {"GBK", 3, 936}, {"gbk", 3, 936},
-        {"GB2312", 6, 936}, {"gb2312", 6, 936},
+        {"UTF-8", 5, 65001},
+        {"GB2312", 6, 936},
+        {"GBK", 3, 936},
+        {"GB18030", 7, 54936},
+        {"Big5", 4, 950},
+        {"Shift_JIS", 9, 932},
     };
     for (int i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++)
         if (len == tbl[i].nl && memcmp(p, tbl[i].n, tbl[i].nl) == 0)
