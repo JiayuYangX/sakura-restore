@@ -4,8 +4,8 @@
 )
 
 function Remove-Background {
-    param([string]$Path, [string]$Color)
-    magick $Path -transparent $Color $Path
+    param([string]$Path, [string]$Color, [string]$Fuzz)
+    magick $Path -fuzz $Fuzz -transparent $Color $Path
 }
 
 function Remove-WhiteEdge {
@@ -38,7 +38,7 @@ $RedOnes = $ShellPngs | Where-Object { $_.Name -ne "surface2230.png" }
 
 if ($BlueOne) {
     Write-Host "  处理 $($BlueOne.Name) (蓝 #0000FF)"
-    Remove-Background $BlueOne.FullName "#0000FF"
+    Remove-Background $BlueOne.FullName "#0000FF" "5%"
 }
 
 $i = 0
@@ -46,7 +46,7 @@ $NoEdge = @("surface1000.png", "surface1001.png")
 foreach ($f in $RedOnes) {
     $i++
     Write-Host "  ($i/$($RedOnes.Count)) $($f.Name) (红 #FF0000)"
-    Remove-Background $f.FullName "#FF0000"
+    Remove-Background $f.FullName "#FF0000" "0%"
     if ($f.Name -notin $NoEdge) {
         # Remove-WhiteEdge $f.FullName
     }
@@ -60,7 +60,7 @@ $j = 0
 foreach ($f in $BalloonPngs) {
     $j++
     Write-Host "  ($j/$($BalloonPngs.Count)) $($f.Name) (灰 #808080)"
-    Remove-Background $f.FullName "#808080"
+    Remove-Background $f.FullName "#808080" "0%"
 }
 
 Write-Host "完成"
