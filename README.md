@@ -2,6 +2,8 @@
 
 本仓库为伪春菜原基础软件 MATERIA 的内置人格 さくら（樱）的汉化工程。文本内容翻译由大模型辅助完成。
 
+![示意图](pic.png)
+
 人格文件请见 [ghost](https://github.com/JiayuYangX/sakura-restore/tree/ghost) 分支。
 
 ## 安装方法
