@@ -1,10 +1,10 @@
 charset,UTF-8
 
-name,さくら
+name,さくら 汉化版
 id,sakura
 type,ghost
-craftman,Araya Kawakami；汉化：Jiayu
-craftmanw,川上新夜；汉化：嘉宇
+craftman,Araya Kawakami / 汉化：Jiayu
+craftmanw,川上新夜 / 汉化：Jiayu
 craftmanurl,https://github.com/JiayuYangX/sakura-restore
 
 homeurl,https://jiayuyangx.github.io/sakura-restore/
