@@ -1,0 +1,4 @@
+.gitignore,nonar,noupdate
+ghost/master/mai.dll,nonar,noupdate
+ghost/master/sayuri.dll,nonar,noupdate
+ghost/master/ssp_shiori_log.txt,nonar,noupdate
