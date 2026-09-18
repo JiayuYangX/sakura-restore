@@ -9,20 +9,19 @@ if "%GXX%"=="" (
     echo ERROR: MSYS2 MinGW32 g++ not found.
     echo Install from https://www.msys2.org/ then:
     echo   pacman -S mingw-w64-i686-gcc
-    pause
     exit /b 1
 )
 
 echo Generating replace_table.inc...
 python generate_replace_table.py
-if %errorlevel% neq 0 pause & exit /b %errorlevel%
+if %errorlevel% neq 0 exit /b %errorlevel%
 
 echo Compiling makoto.dll (32-bit)...
 if not exist output mkdir output
 set PATH=%GXXDIR%;%PATH%
-"%GXX%" -shared -o output\makoto.dll makoto.cpp -O2 -static -s
-if %errorlevel% neq 0 pause & exit /b %errorlevel%
+"%GXX%" -shared -o output\makoto.dll makoto.cpp -O2 -static -s -Wl,--no-insert-timestamp
+if %errorlevel% neq 0 exit /b %errorlevel%
 
 echo SUCCESS: output\makoto.dll
 if not "%1"=="" copy /y output\makoto.dll "%1\makoto.dll" >nul
-pause
+if exist replace_table.inc del /q replace_table.inc
