@@ -481,48 +481,48 @@ Offset,Length,Type,Text
 0x6135C,4,code,
 0x622A0,15,code,宋体
 0x6236C,15,code,宋体
-0x63168,27,code,\0\s0记录完成……\w8\w8啦。
+0x63168,27,code,\0\s0记录完成……\w8\w8好。
 0x6336C,47,code,\t\0\s0嘛，跟备忘录差不多呢……\w8\w8\n\n
-0x633A4,41,code,\1\s0就这些，还挺方便的。\w8\w8
+0x633A4,41,code,\1\s0虽然就这点功能，但还挺方便的。\w8\w8
 0x633D8,42,code,\0\n\n嗯。\w8\w8\n\n注意事项是\w8\w8\n\n
-0x6340C,66,code,%*选择路径（写着 Todo 的部分）开始编写就是新增\w8\n
-0x63458,25,code,%*其他情况算修改\w8\n
+0x6340C,66,code,%*选中根（写着 Todo 的部分）开始输入即为新增\w8\n
+0x63458,25,code,%*除此之外均视为修改\w8\n
 0x6347C,29,code,%*操作以键盘为主\w8\n\n
-0x634A4,24,code,\w8\w8就是这样。\w8\w8
+0x634A4,24,code,\w8\w8大概就这些。\w8\w8
 0x634C8,46,code,\1\n\n为什么操作以键盘为主啊。\w8\w8
-0x63500,59,code,\0\s8\n\n哎呀……\w8\w8因为鼠标好麻烦。\w8\w8
+0x63500,59,code,\0\s8\n\n哎呀……\w8\w8因为用鼠标什么的太麻烦了。\w8\w8
 0x63544,40,code,\1\n\n……\w8\w8总有一天会被捅的。\w8\w8
-0x63578,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点程度总可以吧。
+0x63578,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点总可以做到吧。
 0x635F0,10,code,信息
-0x63E4C,4,code,每周
-0x63E5C,5,code,星期 
-0x6441C,27,code,\0\s0记录完成……\w8\w8啦。
-0x64554,101,code,\t\0\s0基本上就是，指定时间，到了就弹出消息通知，的功能。\w8\w8
-0x645C4,90,code,\1\s0日期指定，或者星期指定。\w8\n\n两个都指定的话房子会烧起来注意点。\w8\w8
+0x63E4C,4,code,星期
+0x63E5C,5,code, 
+0x6441C,27,code,\0\s0记录完成……\w8\w8好。
+0x64554,101,code,\t\0\s0基本上，就是指定时间，到了时间就弹出消息通知，这么个功能。\w8\w8
+0x645C4,90,code,\1\s0指定日期，或者指定星期。\w8\n\n两个都指定的话房子会烧起来的，注意点哦。\w8\w8
 0x64628,26,code,\0\n\n注意事项是\w8\w8\n\n
-0x6464C,68,code,%*选择路径（写着 Notify 的部分）开始编写就是新增\w8\n
-0x6469C,25,code,%*其他情况算修改\w8\n
-0x646C0,44,code,%*输入「*」则该部分变为「每」\w8\n
-0x646F8,37,code,%*除消息外还可执行文件\w8\n
+0x6464C,68,code,%*选中根（写着 Notify 的部分）开始输入即为新增\w8\n
+0x6469C,25,code,%*除此之外均视为修改\w8\n
+0x646C0,44,code,%*输入「*」后，该部分将变为「每」\w8\n
+0x646F8,37,code,%*除了消息外，还可以执行文件\w8\n
 0x64728,23,code,%*数字仅限半角\w8\n\n
 0x64748,33,code,%*星期用「日一二三四五六」\w8\n\n
 0x64774,29,code,%*时间用24小时制表述\w8\n\n
 0x6479C,29,code,%*操作以键盘为主\w8\n\n
-0x647C4,24,code,\w8\w8就是这样。\w8\w8
+0x647C4,24,code,\w8\w8大概就这些。\w8\w8
 0x647E8,46,code,\1\n\n为什么操作以键盘为主啊。\w8\w8
-0x64820,59,code,\0\s8\n\n哎呀……\w8\w8因为鼠标好麻烦。\w8\w8
+0x64820,59,code,\0\s8\n\n哎呀……\w8\w8因为用鼠标什么的太麻烦了。\w8\w8
 0x64864,40,code,\1\n\n……\w8\w8总有一天会被捅的。\w8\w8
-0x64898,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点程度总可以吧。
+0x64898,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点总可以做到吧。
 0x64AC0,15,code,\0\s0添加完成。
 0x64AFC,10,code,信息
 0x64B34,18,code,时间条件（* 为每）
-0x64B74,51,code,可执行文件完整路径（可拖放文件输入）
+0x64B74,51,code,可执行文件的完整路径（可通过拖放文件输入）
 0x653E8,51,code,\0\s1唔。\w8\w8数量真多啊。\w8\w8\n\n\s[20]
-0x65424,22,code,……\w8\w8啦。\w8\w8
+0x65424,22,code,……\w8\w8好。\w8\w8
 0x65458,10,code,\n\n哟。
 0x65480,12,code,面骰子
-0x65498,24,code,接……\w8\w8着。\w8\w8
-0x65690,179,code,\0\s0所谓的骰子……\w8\w8呢。\w8\w8\1\s0是骰子呢。\w8\w8\0\n\n基本上在编辑框里输入骰子公式，按 Enter 就行。\w8\w8\n\n2d6+10 之类，加减法也能做哦。
+0x65498,24,code,颗……\w8\w8嗯。\w8\w8
+0x65690,179,code,\0\s0也就是所谓的骰子……\w8\w8吧。\w8\w8\1\s0是骰子呢。\w8\w8\0\n\n基本就是编辑框里输入骰子表达式，然后按 Enter 就行。\w8\w8\n\n比如 2d6+10 之类的，还可以进行加减运算哦。
 0x688E0,38,code,"\![leave,passivemode]\0\s0设置完成。"
 0x68A1C,257,code,"\0\s0只有一个注意事项。\w8\w8\n\nWin9x 缺少桌面透明绘制能力，所以\w8\_b[correctimage.png,20,78]\w8\n\n\n\n\n\n\n不会像这样漂亮地显示出来。\w8\w8\n\n这也是没办法的事，请放弃吧。\w8\w8\1\s0能看见就已经算不错了。"
 0x6A98C,22,code,教他网游礼仪
@@ -647,7 +647,7 @@ Offset,Length,Type,Text
 0x700B8,6,code,あると
 0x700C8,28,code,\0\s0\1\s0\_s咖喱启动。\_s
 0x700F0,8,code,花ちゃん
-0x70104,28,code,\0\s0\1\s0\_s乌冬启动。\_s
+0x70104,28,code,\0\s0\1\s0\_s乌冬面启动。\_s
 0x7012C,4,code,毒子
 0x7013C,50,code,\0\s0\1\s0\_s低性能机器杀手启动。\_s
 0x70178,4,code,美耳
@@ -658,7 +658,7 @@ Offset,Length,Type,Text
 0x701F4,26,code,\0\s0\1\s0\_s别人启动。\_s
 0x70218,38,code,\0\s0……\w8\w8出轨吗。\w8\w8\1\s0……
 0x70248,72,code,\0\s4诶。\w8\w8要换人吗？\w8\w8\1\s0……\w8\w8别那么不情愿嘛。
-0x70630,65,code,\0\s7\1\s1乌纽有我一个就够了。\w8\w8\0\s1……\w8\w8木野桑？
+0x70630,65,code,\0\s7\1\s1乌纽只有我一个就够了。\w8\w8\0\s1……\w8\w8木野薰？
 0x7067C,75,code,\0\s7\1\s0\0猎人————————\w8\w8机会来了！\1\s1冷静点！
 0x706D0,49,code,\0\s7\1\s0\0我才不要樋上至的画！\1\s1冷静点！
 0x7070C,51,code,\0\s7\1\s0\0游戏专业学校毕业根本没用！\1\s1冷静点！
@@ -692,7 +692,7 @@ Offset,Length,Type,Text
 0x70F8C,48,code,\0\s7\1\s0\0对佛像出\w8拳！\1\s1冷静点！
 0x70FC8,73,code,\0\s7\1\s0\0请别强行加色情场景！\1\s1冷静点！
 0x79D20,15,code,\s3超出边界…\e
-0x79D38,66,code,\0\s4……\w8\w8感觉重重叠叠的。\w8\w8\1\s1呼呼呼。
+0x79D38,66,code,\0\s4……\w8\w8感觉重重叠叠的。\w8\w8\1\s1嘿嘿嘿。
 0x79D84,14,code,\s[21]…………
 0x79D9C,24,code,\s[21]……\w8\w8嗯嗯……
 0x79DC0,24,code,\s[21]……\w8\w8嗯……
@@ -745,14 +745,14 @@ Offset,Length,Type,Text
 0x7A950,24,code,更换樱的外壳
 0x7A98C,20,code,切换对话框
 0x7A9CC,24,code,头条传感器状态
-0x7AA01,4,code,退出
+0x7AA00,4,code,退出
 0x7AA10,8,code,实用信息
 0x7AA24,8,code,可能吧
 0x7AA38,10,code,小樱导航
 0x7AA4C,12,code,去小樱那
 0x7AA78,13,code,月之相
 0x7AAA8,34,code,会被敌人发现所以战斗中不用
-0x7AAFC,8,code,萌战
+0x7AAFC,8,code,最萌
 0x7AB10,16,code,小樱打字
 0x7AB2C,16,code,打字游戏
 0x7AB48,12,code,小樱问答
@@ -810,7 +810,7 @@ Offset,Length,Type,Text
 0x7B2DC,33,code,\0\s5你很懂嘛。\w8\w8\n\n
 0x7B308,2,code,第
 0x7B314,20,code,题，通过！\w8\w8
-0x7B358,51,code,\0\s8……\w8\w8不想回答……\w8\w8啦。\w8\w8\n\n
+0x7B358,51,code,\0\s8……\w8\w8看来不想回答……\w8\w8好。\w8\w8\n\n
 0x7B3A4,27,code,\0\s5时间到。\w8\w8\n\n
 0x7B3C8,15,code,\0\s8……\w8\w8
 0x7B3E0,18,code,吗……\w8\w8\n\n
@@ -828,7 +828,7 @@ Offset,Length,Type,Text
 0x7B8BC,56,code,\0\s5Beta录像带L-500的βII模式录影时间是几分钟？
 0x7B9E8,114,code,\0\s0让高机动幻想秒变垃圾游戏的菜鸟救星武器\w4 N.E.P。\w8\w8\n\n这把武器的正式名称是？\w8\w8\n\n
 0x7BA64,112,code,\s5啊，顺便说下，请用英语，不加连字符中点等多余符号。\w8\w8\1\s0片假名也行，姑且算吧。
-0x7BB70,44,code,\b[2]\0\s[20]菜单……\w8\w8\s0啦。\n\n
+0x7BB70,44,code,\b[2]\0\s[20]菜单……\w8\w8\s0好。\n\n
 0x7BBA8,142,code,"\b[2]\![enter,passivemode]\0\s5\_s小樱问答。\_s\w8\1\s0\n\n简称「小樱打」。\w8\w8\0\n\n……\w8\w8\s8不不，那绝对不对……\w8\w8\n\n"
 0x7BC40,30,code,"\![*]\q[说明,OnQuizTutorial]\n"
 0x7BC7C,10,code,\![*]\q[第
@@ -837,8 +837,8 @@ Offset,Length,Type,Text
 0x7BCB4,10,code,\_q○\_q\n
 0x7BCC8,25,code,"\![*]\q[退出,OnQuizLeave]"
 0x7BD04,85,code,\0\s[20]要出题了，输入答案吧。\w8\w8\n\n\s5普通的问答游戏呢。\w8\w8\n\n
-0x7BD64,45,code,\1\s0有时限的，注意点哦。\w8\w8\n\n
-0x7BD9C,83,code,\0\s5不是选择题那种轻松的，做好觉悟吧。\w8\w8\n\n
+0x7BD64,45,code,\1\s0有时间限制的，注意点哦。\w8\w8\n\n
+0x7BD9C,83,code,\0\s5顺便说下，这可不是单选题那种轻松的事，做好心理准备吧。\w8\w8\n\n
 0x7BDF8,13,code,\1\s0嘿嘿嘿。
 0x7BE4C,75,code,"\![leave,passivemode]\0\s0那么，就到这里吧。\w8\w8\n\n\s5辛苦了。\e"
 0x7BEBC,27,code,\0\s8好可惜啊~\w8\w8\n\n
@@ -855,23 +855,23 @@ Offset,Length,Type,Text
 0x7C0A4,27,code,\0\s4……\w8\w8没干劲？
 0x7C0C8,37,code,\0\s8……\w8\w8嘛，再加油吧……
 0x7C0F8,46,code,\1\s0还行吧。\w8\w8\0\s5下次加油哦。
-0x7C130,61,code,\0\s0没能刷新记录……\w8啦。\w8\w8\n\n\s5下次加油哦。
+0x7C130,61,code,\0\s0没能刷新记录……\w8好。\w8\w8\n\n\s5下次加油哦。
 0x7C178,65,code,\0\s0（看到这条消息的人处于Mercury Rising状态）\e
 0x7C1D0,64,code,"好，回到标题了哦。\w8\w8\![raise,OnTypinggameEnter,return]"
 0x7C25C,60,code,"\0\s0那么，\s5开始吧。\w8\w8\![raise,OnTypinggameNext]"
 0x7C314,24,code,然后……\w8\w8\n\n\s0\_q
-0x7C3A4,39,code,\0\s[20]菜单……\w8\w8\s0啦。\n\n
+0x7C3A4,39,code,\0\s[20]菜单……\w8\w8\s0好。\n\n
 0x7C3D4,141,code,"\![enter,passivemode]\0\s5\_s小樱打字。\_s\w8\1\s0\n\n简称「小樱打」。\w8\w8\0\n\n……\w8\w8\s8不，那有点……\w8\w8\n\n"
 0x7C46C,36,code,"\![*]\q[说明,OnTypinggameTutorial]\n"
 0x7C524,31,code,"\![*]\q[退出,OnTypinggameLeave]"
-0x7C56C,115,code,\0\s[20]首先我说要打的字，你在键盘上输入。\w8\w8\n\n\s5普通的打字游戏呢。\w8\w8\n\n
-0x7C5E8,41,code,\1\s0有时限注意点哦。\w8\w8
+0x7C56C,115,code,\0\s[20]首先我会说要打的字，你在键盘上输入。\w8\w8\n\n\s5普通的打字游戏呢。\w8\w8\n\n
+0x7C5E8,41,code,\1\s0有时间限制的，注意点哦。\w8\w8
 0x7C61C,71,code,\0\s0成绩会保存，加油留下好成绩。\w8\w8\n\n
-0x7C66C,103,code,\s5啊，还有，难度可能不太正常，烦躁的时候最好别玩……\n\n\w8\w8
-0x7C6DC,33,code,\1\s0……\w8\w8有点过了吧，这个。
+0x7C66C,103,code,\s5啊，还有，难度可能有点离谱，所以烦躁的时候最好别玩……\n\n\w8\w8
+0x7C6DC,33,code,\1\s0……\w8\w8你管这叫有点。
 0x7C784,29,code,\0\s0下载中。\e
 0x7C7AC,27,code,\0\s0开始下载。\e
-0x7C7EC,56,code,\0\s4不要。\w8\w8\1\s0……\w8\w8不，这样就行了吗。
+0x7C7EC,56,code,\0\s4不要。\w8\w8\1\s0……\w8\w8不，这样真的没问题吗。
 0x7C84C,9,code,\0\s0……
 0x7C874,53,code,\0\s0\1\s1梅德尔，又有一颗星星消失了……\0\s4……
 0x7C8FC,28,code,\0\s0updates2.dau 开始创建。
@@ -904,7 +904,7 @@ Offset,Length,Type,Text
 0x7CFAC,19,code,\0\s3……\w8\w8？\e
 0x7CFE0,23,code,\0\s0连接服务器～。\e
 0x7D02C,46,code,\0\s3……\w8\w8\1\s0……\w8\w8好悲伤啊。
-0x7D064,69,code,\0\s[20]更新结束……\w8\w8啦。\w8\w8\s5\n\n可能变聪明了点。
+0x7D064,69,code,\0\s[20]更新结束……\w8\w8好。\w8\w8\s5\n\n可能变聪明了点。
 0x7D12C,32,code,\0\s8……\w8\w8\1\s0破线路呢。
 0x7D16C,42,code,\0\s8……\w8\w8\1\s0上传失误啊。
 0x7D1A0,34,code,\0\s8……\w8\w8\1\s0破服务器呢。
@@ -922,7 +922,7 @@ Offset,Length,Type,Text
 0x7D3D0,9,code,秒。\w8\n
 0x7D3FC,11,code,秒。\w8\n\n
 0x7D410,53,code,\0\s0……\w8\w8\s7喂，白跑一趟吗——！\1\s1冷静点！
-0x7D450,68,code,\6\0\s0所以，擅自修正了。\w8\w8\1\s0……\w8\w8行吗？
+0x7D450,68,code,\6\0\s0既然如此，我就擅自修正了。\w8\w8\1\s0……\w8\w8真的没问题吗？
 0x7D4B8,50,code,\0\s3……\w8\w8好慢……\w8\w8\1\s0破线路呢……
 0x7D51C,22,code,……\w8\w8破服务器……
 0x7D54C,21,code,\0\s0……\w8\w8什么？
@@ -958,7 +958,7 @@ Offset,Length,Type,Text
 0x7DCB0,8,code,回收站空
 0x7DCF8,18,code,最近使用的文件
 0x7DD14,6,code,清除
-0x7DD5C,22,code,丢弃图标缓存
+0x7DD5C,22,code,清除图标缓存
 0x7DDC0,10,code,IP地址
 0x7DE98,8,code,骰子
 0x7DED4,15,code,\0\s4……\w8\w8
@@ -968,13 +968,13 @@ Offset,Length,Type,Text
 0x7DF3C,6,code,至
 0x7DF4C,58,code,\0\s4……\w8\w8不，住手吧，至绘。\w8\w8\1\s0……
 0x7DFAC,14,code,……\w8\w8好。
-0x7DFC4,33,code,……\w8\w8啦。\1\s0搞错了哦。
+0x7DFC4,33,code,……\w8\w8好。\1\s0搞错了哦。
 0x7DFF0,39,code,地藏……\w8\w8好。\1\s0……\w8\w8地藏？
 0x7E020,49,code,"\![open,browser,https://www.baidu.com/s?wd="
 0x7E05C,18,code,&ie=gbk]
-0x7E094,76,code,\0\s0唔。\w8\w8\n\n\s5内存刷新时间到了！\w8\w8\n\n
-0x7E0EC,37,code,\1\s0机器别死机就行。\w8\w8
-0x7E11C,60,code,\0\s5那就，随便向神祈祷吧！\w8\w8\w8\n\n
+0x7E094,76,code,\0\s0唔。\w8\w8\n\n\s5内存刷新时间到！\w8\w8\n\n
+0x7E0EC,37,code,\1\s0别把机器搞死机就好。\w8\w8
+0x7E11C,60,code,\0\s5那种事嘛，随便向什么神祈祷一下吧！\w8\w8\w8\n\n
 0x7E164,54,code,"\s0那么，开始吧。\x\![raise,On_RefreshMemoryExecute]"
 0x7E1C4,71,code,\0\s[20]……\w8\w8好。\w8\w8\n\n\s5内存刷新完成！\w8\w8\n\n
 0x7E214,41,code,\1\s0还好机器没死机。\w8\w8\n\n
@@ -1009,18 +1009,18 @@ Offset,Length,Type,Text
 0x7E994,47,code,\0\s0嗯。\w8\w8\n\n\s5那，从现在开始数5分钟哦。
 0x7E9CC,58,code,\0\s1诶……\w8\w8啦，\w4\s0那，从现在开始重新数5分钟了。
 0x7EA10,64,code,"\![enter,passivemode]\0\s5设置完成后按 OK 按钮哦。"
-0x7EA78,90,code,"\s[20]清空回收站……\w8\w8啦。\w8\w8\n\n\![raise,Execute,clearrecyclebin]\s5完成了。"
-0x7EADC,109,code,"\s[20]清除最近使用的文件……\w8\w8啦。\w8\w8\n\n\![raise,Execute,clearrecentdirectory]\s5完成了。"
+0x7EA78,90,code,"\s[20]清空回收站……\w8\w8好。\w8\w8\n\n\![raise,Execute,clearrecyclebin]\s5搞定了。"
+0x7EADC,109,code,"\s[20]清除最近使用的文件……\w8\w8好。\w8\w8\n\n\![raise,Execute,clearrecentdirectory]\s5搞定了。"
 0x7EC28,23,code,\0\s0通知列表。
-0x7EC48,19,code,\0\s5要滚动看看吗？
-0x7EC84,63,code,\0\s[20]复制IP地址……\w8\w8啦。\w8\w8\n\n\s5完成了。
+0x7EC48,19,code,\0\s5要试着掷下吗？
+0x7EC84,63,code,\0\s[20]复制IP地址……\w8\w8好。\w8\w8\n\n\s5搞定了。
 0x7ECE4,21,code,\0\s0待办列表。
-0x7ED04,101,code,"\s[20]清除图标缓存……\w8\w8啦。\w8\w8\n\n\![raise,Execute,updateexplorer]\s5完成了。"
+0x7ED04,101,code,"\s[20]清除图标缓存……\w8\w8好。\w8\w8\n\n\![raise,Execute,updateexplorer]\s5搞定了。"
 0x7ED74,49,code,\0\s[20]当前OS的连续运行时间是……\w8\w8\n\n\s0
 0x7EDB0,4,code,小时
 0x7EDC0,2,code,秒
 0x7EDCC,6,code,哦。
-0x7EDEC,68,code,\0\s5知道古朗基语可真内行啊。\w8\w8\1\s1呼呼呼。
+0x7EDEC,68,code,\0\s5知道古朗基语可真内行啊。\w8\w8\1\s1嘿嘿嘿。
 0x7EE4C,60,code,\0\s5知道重力语可真宅啊。\w8\w8\1\s1……
 0x7EEA8,24,code,\0\s8……\w8\w8\1\s0……
 0x7EF08,31,code,\s[20]游戏……\w8\w8\s0好。\n
@@ -1042,49 +1042,49 @@ Offset,Length,Type,Text
 0x7F30C,31,code,"\![*]\q[古朗基语转换,jtogg]\n"
 0x7F334,27,code,"\![*]\q[重力语转换,jtogv]\n"
 0x7F358,34,code,"\![*]\q[CompJapan功能,compjapan]\n"
-0x7F384,38,code,"\![*]\q[OS连续运行时间？,ostime]\n"
+0x7F384,38,code,"\![*]\q[OS的连续运行时间是？,ostime]\n"
 0x7F3B4,47,code,"\![*]\q[这台机器的IP地址是？,ipaddress]\n"
 0x7F3EC,43,code,"\![*]\q[清空回收站,clearrecyclebin]\n"
 0x7F420,62,code,"\![*]\q[清除「最近使用的文件」,clearrecentdirectory]\n"
 0x7F468,52,code,"\![*]\q[清除图标缓存,updateexplorer]\n"
 0x7F4A8,52,code,"\![*]\q[清除字体缓存,clearfontcache]\n"
 0x7F4E8,46,code,"\![*]\q[刷新内存,On_RefreshMemory]\n"
-0x7F538,69,code,\0\s[20]删除字体缓存……\w8\w8啦。\w8\w8\n\n\s5完成了。
-0x7F59C,29,code,\0\s0请输入要搜索的单词。
+0x7F538,69,code,\0\s[20]清除字体缓存……\w8\w8好。\w8\w8\n\n\s5搞定了。
+0x7F59C,29,code,\0\s0请输入要搜索的词语。
 0x7F5EC,112,code,"\0\s0开始查询天气～。\![execute,http-get,""http://tenki.www.infoseek.co.jp/yoho/y4410.html""]\![raise,OnWeather]"
-0x7F688,37,code,\0\s0就是操作方法之类的说明\n\n
+0x7F688,37,code,\0\s0就是关于操作方法之类的说明。\n\n
 0x7F6B8,30,code,"\![*]\q[基础,tutorial_basic]\n"
 0x7F6E0,40,code,"\![*]\q[安装教程,tutorial_install]\n"
 0x7F714,37,code,"\![*]\q[快捷键教程,tutorial_hotkey]\n"
 0x7F744,43,code,"\![*]\q[樱的特色元素,tutorial_sakura]\n"
 0x7F778,27,code,"\![*]\q[返回,tutorial_quit]"
-0x7F7B4,117,code,"\0\s0随便弄弄大概总能行的。\w8\w8\1\s0……\w8\w8不，这样就行了吗。\x\![raise,OnChoiceSelect,tutorial]"
-0x7F84C,35,code,\0\s5以下是我特色元素的说明\n\n
+0x7F7B4,117,code,"\0\s0随便弄弄，大概总会有办法的。\w8\w8\1\s0……\w8\w8不，这样真的没问题吗。\x\![raise,OnChoiceSelect,tutorial]"
+0x7F84C,35,code,\0\s5以下是我特色元素的说明。\n\n
 0x7F878,71,code,"\![*]\q[关于几个难懂的元素,tutorial_sakura_difficult]\n"
 0x7F8C8,22,code,"\![*]\q[返回,tutorial]"
-0x7F90C,49,code,\0\s0呃——。\w8\w8\n\n首先，是只限w2k的话题，
-0x7F948,94,code,时钟和模拟时钟之类的，那些都可以拖放到喜欢的位置。\w8\w8\n\n
+0x7F90C,49,code,\0\s0呃——。\w8\w8\n\n首先，这只适用于 w2k，
+0x7F948,94,code,时钟和模拟时钟之类的，都可以拖动到你喜欢的位置。\w8\w8\n\n
 0x7F9B0,47,code,\1\s0放在不碍事的位置就好。\w8\w8\n\n
-0x7F9E8,90,code,\0\s0还有，双击可以回到默认位置。\w8\w8\n\n\s5好好布置哦。\w8\w8
-0x7FA4C,51,code,\1\s0嘛，实在嫌碍事的话关掉也行哦。\x
+0x7F9E8,90,code,\0\s0还有，双击即可恢复到默认位置。\w8\w8\n\n\s5好好布置一下吧。\w8\w8
+0x7FA4C,51,code,\1\s0嘛，实在碍事的话也可以关掉。\x
 0x7FAD8,41,code,\0\s[20]安装……\w8\w8\s0好。\n\n
-0x7FB38,44,code,"\![*]\q[安装(拖放),tutorial_install_dnd]\n"
-0x7FBC4,72,code,\0\s[20]nar 呢，是这个程序用的数据文件的名字。\w8\w8
-0x7FC18,107,code,\n\n\s0基本上，不管什么东西都必定打包在1个nar文件里，扩展名是 .nar。\w8\w8\w8
-0x7FC8C,184,code,\1\s0无论什么人格，外壳，发布时一定会变成 nar。\w8\w8\n\n用户桑的仓库目录里，nar 文件会排成一排，像小山一样。\w8\w8
-0x7FD50,20,code,\0\n\n就是这样。
-0x7FDC4,126,code,\0\s[20]呃……\w8\w8\n\n\s0想要安装的 nar 文件拖放给我，这样就安装结束了。\w8\w8
-0x7FE4C,15,code,\1\s0简单呢。
-0x7FE84,187,code,\0\s0有个特别方便的功能，直接把 URL 拖放给我的话，会从服务器下载那个文件并完成安装。\w8\n\n这就是 URL DnD。\w8\w8
-0x7FF48,35,code,\1\s0最近这种方式是主流呢。\w8\w8
-0x7FF74,195,code,\0\n\n从浏览器拖拽链接过来就行，更简单。\w8\w8\n\n顺便下载的文件在默认情况下保存到家目录的 nar 目录里。\w8\w8
-0x80040,116,code,\1\n\n唯一的弱点是……\w8\w8没有续传之类的功能，网速慢的话就比较那个了。\w8\w8
-0x800C0,35,code,\0\s1\n\n嘛，就这些啦……
-0x80104,174,code,"\0\s[20]快捷键……\w8\w8\s0啦。\n\n\![*]\q[CTRL+SHIFT+F12,tutorial_hotkey_f12]\n\![*]\q[CTRL+SHIFT+DEL,tutorial_hotkey_del]\n\![*]\q[CTRL+SHIFT+INS,tutorial_hotkey_ins]\n"
-0x801D8,143,code,"\0\s0\_qCTRL+SHIFT+F12\_q 可以回到默认位置。\w8\w8\1\s0飞到画面外的时候，用这个。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
+0x7FB38,44,code,"\![*]\q[安装,tutorial_install_dnd]\n"
+0x7FBC4,72,code,\0\s[20]所谓的 nar，就是这个程序用的数据文件的名字。\w8\w8
+0x7FC18,107,code,\n\n\s0基本上，无论是什么内容，都一定会打包进一个 nar 文件里，扩展名是 .nar。\w8\w8\w8
+0x7FC8C,184,code,\1\s0无论是什么人格、外壳，发布时都会变成 nar 格式。\w8\w8\n\n也就是说，在用户桑的仓库目录里，nar 文件会整整齐齐排成一排。\w8\w8
+0x7FD50,20,code,\0\n\n就是这么回事。
+0x7FDC4,126,code,\0\s[20]呃……\w8\w8\n\n\s0把想要安装的 nar 文件拖放到我这里，安装就完成了。\w8\w8
+0x7FE4C,15,code,\1\s0很简单吧。
+0x7FE84,187,code,\0\s0有个比较特殊又很方便的功能，直接把 URL 直接拖放（DnD）到我这里，就会从服务器下载该文件，甚至还能直接完成安装。\w8\n\n这就是 URL DnD。\w8\w8
+0x7FF48,35,code,\1\s0最近这已经成为主流了呢。\w8\w8
+0x7FF74,195,code,\0\n\n只要从浏览器拖拽链接过来就行，所以更加简单。\w8\w8\n\n顺便说下，下载的文件默认会保存在主目录下的 nar 文件夹里。\w8\w8
+0x80040,116,code,\1\n\n唯一的缺点是……\w8\w8没有断点续传之类的功能，所以如果网速慢的话就比较那个了。\w8\w8
+0x800C0,35,code,\0\s1\n\n嘛，就这一点稍微有点……
+0x80104,174,code,"\0\s[20]快捷键……\w8\w8\s0好。\n\n\![*]\q[CTRL+SHIFT+F12,tutorial_hotkey_f12]\n\![*]\q[CTRL+SHIFT+DEL,tutorial_hotkey_del]\n\![*]\q[CTRL+SHIFT+INS,tutorial_hotkey_ins]\n"
+0x801D8,143,code,"\0\s0\_qCTRL+SHIFT+F12\_q 可以恢复到默认位置。\w8\w8\1\s0角色飞到画面外的时候，就用这个。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
 0x8028C,111,code,"\0\s0\_qCTRL+SHIFT+DEL\_q 是关闭对话框。\w8\w8\1\s0这是基础操作吧。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
-0x80320,130,code,"\0\s0\_qCTRL+SHIFT+INS\_q 是 SEND Box。\w8\w8\1\s0……\w8\w8嘛，大概是调试用的吧。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
-0x803C4,60,code,"\0\s0那，需要的时候再来吧～。\![leave,passivemode]"
+0x80320,130,code,"\0\s0\_qCTRL+SHIFT+INS\_q 是 SEND Box。\w8\w8\1\s0……\w8\w8嘛，这是调试用的啦。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
+0x803C4,60,code,"\0\s0那么，下次有需要的时候再来吧～。\![leave,passivemode]"
 0x80420,12,code,「很健谈」
 0x80438,8,code,「普通」
 0x8044C,8,code,「沉默」
@@ -1176,7 +1176,7 @@ Offset,Length,Type,Text
 0x82D60,60,code,\1\s0……\w8\w8就是所谓的尴尬气氛呢。\w8\w8\w8\n\n
 0x82DA8,99,code,\1\s0对不太熟的人突然揉胸，被当傻瓜也没办法……\w8\w8\w8\w8\n\n
 0x82E14,181,code,……\w8\w8世上有能揉的胸和不能揉的胸。\w8\w8\w8胸要在揉之前做好能揉的准备才能揉。\w8\w8\w8\w8\w8\n\n「心敞开了自然胸也能随便揉」\w8\w8\w8\n\n
-0x82ED4,56,code,\s1这是，来自乌纽桑的建议……\w8\w8\w8\-
+0x82ED4,56,code,\s1这个，是来自乌纽桑的建议哦……\w8\w8\w8\-
 0x82F48,66,code,\t\0\s[23]嗯…………\w8\w8\w8\w8\n\n啊。\w8\w8\c\b[-1]\s[-1]\w8\w8
 0x82F94,54,code,\0\s5什，什么？\1\s0……\w8\w8擦口水啦，口水。
 0x82FD4,21,code,\1\s0……\w8\w8\w8\w8
@@ -1235,8 +1235,8 @@ Offset,Length,Type,Text
 0x83A28,45,code,"\![*]\q[变为最困状态,On_debug_nemuku]\n"
 0x83A60,52,code,"\![*]\q[变为最不困状态,On_debug_nemukunai]\n"
 0x83AF8,29,code,\0\s0闲置计数加1200。
-0x83B50,169,code,\0\s6……\w8\w8啦。\w8\w8\w8\w8\n\n\s0相当累了呢……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
-0x83C20,173,code,\0\s6……\w8\w8啦。\w8\w8\w8\w8\n\n\s0突然精神起来了……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
+0x83B50,169,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0相当累了呢……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
+0x83C20,173,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0突然精神起来了……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
 0x83CF0,31,code,\0\s0真的要退出吗？\n\n
 0x83D18,36,code,"\![*]\q[确定,On_exitwindows_yes]\n"
 0x83D48,28,code,"\![*]\q[还是算了,cancel]\n"
@@ -1309,24 +1309,24 @@ Offset,Length,Type,Text
 0x84F1C,52,code,早上：\w4用死鱼眼观看资讯节目\w8\n
 0x84F5C,36,code,早上：\w4完全不想起床\w8\n
 0x84F8C,42,code,早上：\w4用手刀破坏闹钟\w8\n
-0x84FC0,26,code,早上：\w4吃乌冬\w8\n
+0x84FC0,26,code,早上：\w4吃乌冬面\w8\n
 0x84FE4,54,code,白天：\w4用死鱼眼看笑笑也可以\w8\n
 0x85024,40,code,白天：\w4大白天就在网游上浪费时间\w8\n
 0x85058,24,code,白天：\w4大白天就喝\w8\n
 0x8507C,18,code,白天：\w4睡觉\w8\n
 0x85098,68,code,白天：\w4因为和山冈士郎出去吃饭结果又成了那样……\w8\n
-0x850E8,26,code,白天：\w4吃乌冬\w8\n
+0x850E8,26,code,白天：\w4吃乌冬面\w8\n
 0x8510C,24,code,清晨：\w4倒卖土地\w8\n
 0x85130,52,code,傍晚：\w4用死鱼眼看东京电视台动画\w8\n
 0x85170,19,code,傍晚：\w4游戏厅
 0x8518C,9,code,连败\w8\n
 0x851A0,20,code,傍晚：\w4好悲伤\w8\n
-0x851C0,26,code,傍晚：\w4吃乌冬\w8\n
+0x851C0,26,code,傍晚：\w4吃乌冬面\w8\n
 0x851E4,109,code,深夜：\w8%ms的事一想起来就难过……\w8睡不着……\w8\w8在床上滚来滚去……\w8\w8但还是喜欢……
 0x8525C,27,code,深夜：\w4在网游上浪费时间
 0x85280,42,code,深夜：\w4和%ms做这个做那个……
 0x852B4,13,code,深夜：\w4妄想
-0x852CC,21,code,深夜：\w4吃乌冬
+0x852CC,21,code,深夜：\w4吃乌冬面
 0x852EC,147,code,\0\s[44]\1\s0\0哟。\w8\w8\1\s1……！\w8\w8\w8\w8\0\n\n……\w8\w8啊。\w8\w8\w8\s[-1]\w8\w8\w8\w8\s8不，只是习惯了……\1\s1\n\n原来是这样啊。
 0x85398,32,code,\0\s1\1\s0\0……\w8\w8掉了……
 0x853C4,57,code,\0\s7\1\s0\0别写垃圾程序了！\1\s0冷静点！
@@ -1366,9 +1366,9 @@ Offset,Length,Type,Text
 0x8602C,32,code,\0\s0\1\s0\_s鹰爪结束。\_s
 0x86058,67,code,\0\s0\1\s0\0……\w8\w8\w8\w8那家伙，绝对不是狗。\1\s1……！
 0x860A4,6,code,阿鲁托
-0x860B4,74,code,\0\s0\1\s0\_s咖喱结束。\_s\w8\w8\1\n\n……\w8\w8不，这样就行了吗。
+0x860B4,74,code,\0\s0\1\s0\_s咖喱结束。\_s\w8\w8\1\n\n……\w8\w8不，这样真的没问题吗。
 0x86108,8,code,小花
-0x8611C,74,code,\0\s0\1\s0\_s乌冬结束。\_s\w8\w8\1\n\n……\w8\w8不，这样就行了吗。
+0x8611C,74,code,\0\s0\1\s0\_s乌冬面结束。\_s\w8\w8\1\n\n……\w8\w8不，这样真的没问题吗。
 0x86170,4,code,毒子
 0x86180,104,code,\0\s0\1\s0\_s低性能机器杀手结束。\_s\w8\w8\1\n\n……\w8\w8King of 资源吞噬者呢。
 0x861F4,81,code,\0\s[20]\1\s0\0……\w8\w8胖了吗？\w8\w8\w8\w8\1\s0……\w8\w8\w8\w8\0\s0\n\n……
@@ -1390,15 +1390,15 @@ Offset,Length,Type,Text
 0x86558,14,code,凸小樱夏装
 0x86570,10,code,凸小樱
 0x86584,27,code,\0\s0\1\s0\_s凸——。\_s\w8
-0x865A8,45,code,\0\s0\1\s0\0……\w8啦。\w8\w8\n\n怎么样？
+0x865A8,45,code,\0\s0\1\s0\0……\w8好。\w8\w8\n\n怎么样？
 0x86638,39,code,\0\s[22]\1\s0……\w8\w8睡得真香呢……
 0x86668,35,code,\0\s[22]\1\s0干嘛，慌慌张张的……
 0x86694,23,code,\0\s[21]\1\s0\0唔……
 0x866B4,41,code,\0\s[26]\1\s3……\w8\w8这个还挺重的。
 0x866E8,61,code,\0\s[22]\1\s0……\w8\w8\w8\w8被冷落了，看起来很寂寞呢。
 0x86748,151,code,\0\s0……\w8\w8那是，一种叫痛痛病的病。\w8\w8\w8\n\n得了痛痛病的话，面部零件就不能正常配置……\n\n\1\s1……！
-0x867E8,8,code,木野桑
-0x867FC,44,code,\1\s1木野桑有我就够了。\w8\w8\0\s0……
+0x867E8,8,code,木野薰
+0x867FC,44,code,\1\s1木野薰只有我一个就够了。\w8\w8\0\s0……
 0x86834,10,code,石松葛兹
 0x86848,72,code,\0\s1……\w8\w8最好别太接近葛兹……\w8\w8\1\s0太危险了。
 0x868AC,74,code,\0\s8……\w8\w8那种铁狗不需要。\w8\w8\1\s0……\w8\w8总有一天会被捅的。
@@ -1407,7 +1407,7 @@ Offset,Length,Type,Text
 0x869A0,10,code,仙境传说
 0x869B4,35,code,\0\s0……\w8\w8\n\n不予置评。
 0x869E0,8,code,海原雄山
-0x869F4,159,code,\0\s0最初只是个傻美食老爹而已。\w8\w8\1\s0不知何时变得像圣人一样了。\w8\w8\0\s8\n\n那漫画里成长最多的好像是他……
+0x869F4,159,code,\0\s0明明一开始只是个傻乎乎的美食家老爹而已。\w8\w8\1\s0不知不觉就变得像圣人一样了。\w8\w8\0\s8\n\n那漫画里成长最多的，好像就是他了……
 0x86A9C,22,code,\0\s0……\w8\w8\s4嗯？
 0x86AE8,2,code,
 0x86B00,2,code,
@@ -1588,7 +1588,7 @@ Offset,Length,Type,Text
 0x8F7B0,34,code,用气势弹回米加粒子炮啦，
 0x8F7DC,28,code,把殖民地丢到地球啦，
 0x8F804,24,code,感觉超厉害的啊。
-0x8F828,34,code,\1\n\n……\w8\w8这样就行了吗。
+0x8F828,34,code,\1\n\n……\w8\w8这样真的没问题吗。
 0x8F854,36,code,\0\s4\1\s1\0\_s哈！\_s\w8\w8\0\n\n
 0x8F884,8,code,现象……
 0x8F898,108,code,\0\s0乌纽。\w8\w8\1\s0嗯？\w8\w8\w8\w8\0\n\n别浪费资源啊。\w8\w8\1\n\n……\w8\w8真啰嗦。
@@ -1632,7 +1632,7 @@ Offset,Length,Type,Text
 0x90028,119,code,喜欢吗？\w8\w8\1\s0嘛，喜欢。\w8\w8\0\n\n……\w8\w8哼。\w8\w8\w8\w8\1\n\n……\w8\w8什么啊，这没结论的对话。
 0x900A8,117,code,喜欢吗？\w8\w8\1\s0讨厌。\w8\w8\0\n\n为什么？\w8\w8\w8\w8\1\n\n……\w8\w8眼神可怕。\w8\w8\0\n\n……\w8\w8眼神？
 0x9013C,4,code,面包
-0x9014C,6,code,乌冬
+0x9014C,6,code,乌冬面
 0x9015C,4,code,荞麦
 0x9016C,51,code,\0\s0乌纽，你小时候都吃些什么？\w8\w8
 0x901A8,19,code,\1\s0嗯……\w8\w8\n
@@ -1678,7 +1678,7 @@ Offset,Length,Type,Text
 0x909C4,31,code,是库洛牌的错！\0\s4……
 0x909EC,136,code,\0\s0把铝箔纸放进微波炉很有意思呢。\w8\w8\1\s0……\w8\w8\w8\w8\w8\w8\0\s1\n\n噼里啪啦。\1\n\n\s1不好玩！
 0x90A80,77,code,据说周日基本上都在摸自己。\w8\w8\1\s0……\w8\w8真糟糕。
-0x90AD8,106,code,\0\s0米饭上浇咖喱就是咖喱饭，\w8\n乌冬上浇咖喱就是咖喱乌冬。\w8\w8\w8\w8\n\n那么，
+0x90AD8,106,code,\0\s0米饭上浇咖喱就是咖喱饭，\w8\n乌冬面上浇咖喱就是咖喱乌冬面。\w8\w8\w8\w8\n\n那么，
 0x90B4C,24,code,浇上咖喱就变成了咖喱
 0x90B70,15,code,\1\s1别浇啊。
 0x90B98,90,code,\0\s1唐纳德因为拐走幼女被撤职了。\w8\w8\1\s0……\w8\w8真是没梦想没希望。
@@ -1840,7 +1840,7 @@ Offset,Length,Type,Text
 0x93024,52,code,大叔」的怪人好像有出没。\w8\w8
 0x93064,12,code,\1……\w8\w8
 0x9307C,30,code,\0\n\n听说他在公园一发现
-0x930A4,56,code,就扯下来扔掉，扯了再扔，每天都这样……
+0x930A4,56,code,就抓过来扔掉，抓了再扔，每天都这样……
 0x930E8,45,code,\0\s[20]前几天去神社，神木上\w8「
 0x93120,71,code,」\w8名字的草人大量钉在上面。\w8\w8
 0x93170,47,code,\1\s0……\w8\w8这世界，是由怨恨组成的呢。
@@ -2107,7 +2107,7 @@ Offset,Length,Type,Text
 0x9A264,45,code,\0\s[20]喂。\w8\w8\1\s0嗯？\w8\w8\0\n\n结果
 0x9A29C,30,code,怎样？\w8\w8\1\n\n……
 0x9A2C4,125,code,折折叠伞折得飞快。\w8\w8\1\s0……\w8\w8\w8\0\s1\n\n好羡慕呢。\1\n\n也不是啦。
-0x9A34C,119,code,吃乌冬吃得飞快。\w8\w8\1\s0……\w8\w8\w8\0\s1\n\n好羡慕呢。\1\n\n也不是啦。
+0x9A34C,119,code,吃乌冬面吃得飞快。\w8\w8\1\s0……\w8\w8\w8\0\s1\n\n好羡慕呢。\1\n\n也不是啦。
 0x9A3CC,24,code,\0\s[20]……\w8\w8真是，
 0x9A3F0,24,code,也在大甩卖呢。\w8\w8
 0x9A414,21,code,\1\s0……\w8\w8嗯。
@@ -2169,7 +2169,7 @@ Offset,Length,Type,Text
 0x9AFA4,12,code,的好感度+
 0x9AFBC,21,code,\w8\n人际关系升级为「
 0x9AFDC,55,code,」。\w8\w8\1\s0……\w8\w8搞什么啊。
-0x9B01C,62,code,\0\s[20]\w4「死伤者加起来」\w4。\w8\w8
+0x9B01C,62,code,\0\s[20]常听见\w4「死伤者加起来」\w4这种说法。\w8\w8
 0x9B064,15,code,\1\s0嗯？\w8\w8
 0x9B07C,54,code,\0\n\n死和受伤可差远了呢。\w8\w8
 0x9B0BC,34,code,\1\n\n……\w8\w8那，确实是。
@@ -2210,8 +2210,8 @@ Offset,Length,Type,Text
 0x9BB00,42,code,\1\s1被杀意波动唤醒的牛……！\0\s4……
 0x9BB34,34,code,\0\s4\1\s1\_s哈！\_s\w8\w8\1\n\n
 0x9BB60,8,code,牛……！
-0x9BB74,16,code,\1\s1游戏1天
-0x9BB90,53,code,时间。\w8\w8\n\n和名人的约定吧？\n\n\w8\w8\0\s4……
+0x9BB74,16,code,\1\s1每天玩游戏
+0x9BB90,53,code,小时。\w8\w8\n\n和名人约好的吧？\n\n\w8\w8\0\s4……
 0x9BBD0,37,code,\1\s1哭吧！\w8喊吧！\w8然后！\w8\w8
 0x9BC00,13,code,～。\0\s4……
 0x9BC18,69,code,已经搞不清是干什么的了。\w8\w8\1\s0……\w8\w8扩展过头了。
@@ -2242,12 +2242,12 @@ Offset,Length,Type,Text
 0x9C3D8,10,code,的刺身……
 0x9C3EC,8,code,烤……
 0x9C400,14,code,的裙边……
-0x9C418,10,code,乌冬……
+0x9C418,10,code,乌冬面……
 0x9C42C,8,code,荞麦……
 0x9C440,13,code,\1\s1猫耳
 0x9C458,4,code,……
 0x9C468,9,code,\0\s4……
-0x9C47C,34,code,\0\s7一把抓吗！\1\s1冷静点！
+0x9C47C,34,code,\0\s7一把抓住吗！\1\s1冷静点！
 0x9C4A8,11,code,\0\s1今日，
 0x9C4BC,93,code,看到背后有拉链了。\w8\w8\1\s0……\w8\w8\0\n\n……\w8\w8糟糕了。
 0x9C524,19,code,\0\s1今天，昏倒的
@@ -2303,9 +2303,9 @@ Offset,Length,Type,Text
 0x9CFDC,26,code,在气压升高时就会变得像
 0x9D000,24,code,一样。\w8\w8
 0x9D024,32,code,被逼到精神绝境，就会变得越来越像
-0x9D050,41,code,\1\s0太过的话会着火的，要注意点哦。
-0x9D084,63,code,\1\s0太过的话会口吐白沫惨死，要注意点哦。
-0x9D0CC,59,code,\1\s0太过的话会瞳孔就会一直张大无法恢复，要注意点哦。
+0x9D050,41,code,\1\s0太过的话会着火的，注意点哦。
+0x9D084,63,code,\1\s0太过的话会口吐白沫惨死，注意点哦。
+0x9D0CC,59,code,\1\s0太过的话会瞳孔就会一直张大无法恢复，注意点哦。
 0x9D110,183,code,\0\s0乌纽会进化什么吗？\w8\w8\1\s0……\w8\w8我和那些面向小孩的怪物可不一样。\w8\w8\w8\w8\0\n\n……\w8\w8卡\w4牌\s7斩击！\1\s1\n\n你听人说话啊！
 0x9D1D0,22,code,\0\s[20]喂乌纽，
 0x9D1F0,28,code,是怎么做的？\w8\w8
@@ -2399,7 +2399,7 @@ Offset,Length,Type,Text
 0xA0724,69,code,最近脱发特别严重。\w8\w8\1\s0……\w8\w8好心酸啊。
 0xA0774,83,code,最近洗头时头发成把成把地掉。\w8\w8\1\s0……\w8\w8要死了吗？
 0xA07D0,75,code,至今还在用医保卡当身份正呢。\w8\w8\1\s0……\w8\w8好心酸啊。
-0xA0824,77,code,刷牙时基本都会出血\w8\w8\1\s0……\w8\w8好心酸啊。
+0xA0824,77,code,每次刷牙时基本上都会出血。\w8\w8\1\s0……\w8\w8好心酸啊。
 0xA087C,47,code,眼睛里藏着炸弹。\w8\w8\1\s0……
 0xA08B4,75,code,一接触紫外线就会当场死亡。\w8\w8\1\s0……\w8\w8太脆弱了。
 0xA0908,58,code,\1\s1丸\w2子\w8三\w4兄\w4弟——。\0\s4……\w8\w8太老套……
@@ -2408,7 +2408,7 @@ Offset,Length,Type,Text
 0xA0A10,89,code,虽然看起来那个样，但其实会把书腰好好收起来。\w8\w8\1\s0……\w8\w8真讲究啊。
 0xA0A74,93,code,基本吃什么都蘸酱油。\w8\w8\1\s0……\w8\w8这种人挺常见的吧。
 0xA0ADC,63,code,的墓碑是用冰棒棍做成的。\w8\w8\1\s0……\w8\w8金鱼吗。
-0xA0B24,71,code,打麻将时据说基本不听牌。w8\w8\1\s0……\w8\w8真抠门啊。
+0xA0B24,71,code,打麻将时据说基本不听牌。\w8\w8\1\s0……\w8\w8真抠门啊。
 0xA0B74,67,code,据说每天都会被鸟粪溅到一次。\w8\w8\1\s0……
 0xA0BC0,85,code,据说没有烙铁也能熔化焊锡。\w8\w8\1\s0……\w8\w8怪物呢。
 0xA0C20,156,code,\0\s[20]明年哆啦A梦电影的标题，\n\n「哆啦A梦\w4 差不多该够了吧？」\w2。\w8\w8\1\s0……\w8\w8不，心情可以理解。
@@ -2453,11 +2453,11 @@ Offset,Length,Type,Text
 0xA1708,53,code,吃大亏」\w2这句谚语的意思，你知道吗？\w8\w8
 0xA1748,65,code,\1\s0嗯——就是……\w8\w8\n\n总之，就是别买的意思。\w8\w8
 0xA1794,37,code,\0\s4\n\n……\w8\w8还是很笼统呢。
-0xA17C4,46,code,\0\s7联邦的乌冬是怪物吗！\1\s1冷静点！
+0xA17C4,46,code,\0\s7联邦的乌冬面是怪物吗！\1\s1冷静点！
 0xA17FC,19,code,\0\s7我最擅长
 0xA1818,33,code,能操控的！\1\s1冷静点！
 0xA1844,40,code,\0\s7这里是托儿所吗！\1\s1冷静点！
-0xA1878,60,code,\0\s7为什么不能老老实实说对不起！\1\s1冷静点！
+0xA1878,60,code,\0\s7为什么就不能老老实实说声对不起！\1\s1冷静点！
 0xA18C0,42,code,\0\s7牛奶要嚼着喝！\1\s1冷静点！
 0xA18F4,52,code,\0\s7加了年糕就什么都变成「力」吗！\1\s1冷静点！
 0xA1934,51,code,\1\s1哎呀！\w8\n\n联邦的牛是神户牛吗！\0\s4……
@@ -2499,7 +2499,7 @@ Offset,Length,Type,Text
 0xA23AC,75,code,的家，终于停电了。\w8\w8\1\s0这下，只剩水了……
 0xA2400,102,code,\0\s[20]说到夏天就是夏祭，\w8\w8\n\s0说到通货膨胀就是超级赛亚人呢。\w8\w8\1\s0……\w8\w8嗯。
 0xA2470,34,code,\1\s1去死吧，哥哥。\0\s4……
-0xA249C,40,code,\1\s1不赢就不要。\0\s4……
+0xA249C,40,code,\1\s1除了胜利，一无所求。\0\s4……
 0xA24D0,34,code,\1\s1怎么办才好啊。\0\s4……
 0xA24FC,108,code,\0\s[20]听说集齐500张松屋的优惠券，就能抽中松屋的周边商品哦。\w8\w8\1\s0……\w8\w8又是闹钟之类的吧。
 0xA2574,94,code,\0\s[20]听说集齐500张松屋的优惠券，就能变得幸福哦。\w8\w8\1\s0……\w8\w8会变成什么样呢。
@@ -2526,7 +2526,7 @@ Offset,Length,Type,Text
 0xA2CC8,170,code,\0\s[20]「棒球笨蛋」\w4听说过吧。\w8\w8\1\s0嗯。\w8\w8\0\s0\n\n那类似的，\w4「笨蛋棒球」\w4怎么样？\w8\w8\w8\1\n\n……\w8\w8是像宇宙棒球队那样的家伙吗。
 0xA2D7C,71,code,\0\s7别老是只做 Kanon 本！\1\s0冷静点！
 0xA2DCC,89,code,经常收到2000日元纸币。\w8\w8\1\s0……\w8\w8这是被诅咒了啊。
-0xA2E30,60,code,\1\s1乌纽有我就够了。\w8\w8\0\s4……\w8\w8木野桑？
+0xA2E30,60,code,\1\s1乌纽只有我一个就够了。\w8\w8\0\s4……\w8\w8木野薰？
 0xA2E78,100,code,\0\s[20]PC-9821 的地位，就相当于 PC Engine 中 SuperGrafx 的地位吧。\w8\w8\1\s0……\w8\w8嗯。
 0xA2EE8,54,code,\0\s7空出常规内存——！\1\s1冷静点！
 0xA2F28,146,code,\0\s4……\w8\w8喷嚏半路缩回去的话，好难受呢。\w8\w8\1\s0是呢。\w8\w8\w8\w8\0\n\n……\w8\w8不如说，现在就是这样呢。
@@ -2748,7 +2748,7 @@ Offset,Length,Type,Text
 0xA8C88,22,code,现在立刻点击这里！
 0xA8CA8,28,code,熊猫滚回神户山里！
 0xA8CD0,186,code,比黄昏更暗者 比血流更红者 湮没于时间之流中 以尔伟大之名 吾于此向黑暗起誓 于我等面前阻碍者 吾与汝将以力赐予平等的毁灭！
-0xA8D94,22,code,伊索普————！！！
+0xA8D94,22,code,伊索————！！！
 0xA8DB4,64,code,在麦当劳汉堡里混入反步兵地雷的，是中国肉包厂商
 0xA8E00,30,code,如果是哥哥的话……可以…哦…
 0xA8E28,24,code,是我疯了吗？
@@ -2829,7 +2829,7 @@ Offset,Length,Type,Text
 0xAAAA8,46,code,抢到整点数的朋友请到BBS报告
 0xAAAE0,52,code,很久很久以前有个地方叫丑八怪村
 0xAAB20,58,code,我很想说你们不是烂橘子，但
-0xAAB64,120,code,下载了但不太会用。谁能教教我。顺便我是新手。请多关照。
+0xAAB64,120,code,下载了但不太会用。谁能教教我。顺便说下我是新手。请多关照。
 0xAABE8,9,code,在2ch演讲
 0xAABFC,20,code,进广告时的福留
 0xAAC1C,20,code,最接近神之一手的猫
