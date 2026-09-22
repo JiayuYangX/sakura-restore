@@ -1,251 +1,179 @@
-import ctypes, struct, os, csv
+# -*- coding: utf-8 -*-
+"""
+从 input/first.dll 提取并解密 AITXT 资源，导出为脚本目录下的 aitxt_extract.txt。
+
+- 直接解析 PE 资源目录定位 AITXT（无硬编码偏移）
+- 解密算法：整块反转 + MT19937 密钥流异或（自带 round-trip 校验）
+- 输出：UTF-8 文本（CRLF 保持原样）
+
+直接运行即可，无参数：
+    python extract_aitxt.py
+"""
+import hashlib
+import struct
+import io
+import os
+import sys
 
 
-def find_aitxt():
-    """查找 SSP 进程，搜索 \\ms,\\female 特征签名，返回(主区域基址, 第二区域基址, PID)。"""
-    k = ctypes.WinDLL('kernel32', use_last_error=True)
-    class PE32(ctypes.Structure):
-        _fields_ = [('dwSize', ctypes.c_uint), ('cntUsage', ctypes.c_uint),
-                    ('th32ProcessID', ctypes.c_uint), ('th32DefaultHeapID', ctypes.c_void_p),
-                    ('th32ModuleID', ctypes.c_uint), ('cntThreads', ctypes.c_uint),
-                    ('th32ParentProcessID', ctypes.c_uint), ('pcPriClassBase', ctypes.c_long),
-                    ('dwFlags', ctypes.c_uint), ('szExeFile', ctypes.c_char * 260)]
+# ---------------------------------------------------------------- PE parsing
 
-    pid = None
-    s = k.CreateToolhelp32Snapshot(2, 0)
-    if s > 0:
-        p = PE32(); p.dwSize = ctypes.sizeof(PE32)
-        if k.Process32First(s, ctypes.byref(p)):
-            while True:
-                if p.szExeFile.lower() in (b'ssp.exe', b'materia.exe'):
-                    pid = p.th32ProcessID; break
-                if not k.Process32Next(s, ctypes.byref(p)): break
-        k.CloseHandle(s)
-    if not pid: raise RuntimeError('SSP 未运行')
-
-    hdr = bytes([0x1A, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x00, 0x00])
-    class MBI(ctypes.Structure):
-        _fields_ = [('BaseAddress', ctypes.c_void_p), ('AllocationBase', ctypes.c_void_p),
-                    ('AllocationProtect', ctypes.c_uint), ('RegionSize', ctypes.c_size_t),
-                    ('State', ctypes.c_uint), ('Protect', ctypes.c_uint), ('Type', ctypes.c_uint)]
-
-    h = k.OpenProcess(0x10 | 0x400, False, pid)
-    if not h: raise RuntimeError(f'无法打开 PID {pid}')
-
-    alloc_hits = {}
-    addr = 0x01000000
-    while addr < 0x7FFFFFFF:
-        m = MBI()
-        if not k.VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(m), ctypes.sizeof(MBI)): break
-        if m.State == 0x1000 and m.RegionSize >= len(hdr):
-            chunk = min(m.RegionSize, 0x10000)
-            buf = ctypes.create_string_buffer(chunk)
-            br = ctypes.c_size_t(0)
-            if k.ReadProcessMemory(h, ctypes.c_void_p(addr), buf, chunk, ctypes.byref(br)) and br.value >= len(hdr):
-                d = buf.raw[:br.value]; pos = 0
-                while True:
-                    idx = d.find(hdr, pos)
-                    if idx == -1: break
-                    alloc_hits.setdefault(m.AllocationBase, []).append(addr + idx)
-                    pos = idx + 1
-        addr += m.RegionSize
-    k.CloseHandle(h)
-    if not alloc_hits: raise RuntimeError('内存中未找到 AITXT')
-    sorted_ab = sorted(alloc_hits.items(), key=lambda x: -len(x[1]))
-    return sorted_ab[0][0], sorted_ab[1][0] if len(sorted_ab) > 1 else None, pid
+def _u16(b, o):
+    return struct.unpack_from('<H', b, o)[0]
 
 
-def try_parse(data, off):
-    if off + 12 > len(data): return None
-    o = struct.unpack('<I', data[off:off+4])[0]
-    i = struct.unpack('<I', data[off+4:off+8])[0]
-    kl = struct.unpack('<I', data[off+8:off+12])[0]
-    if not (1 <= o <= 500 and 1 <= i <= 10 and 1 <= kl <= 5000): return None
-    if off + 12 + kl > len(data): return None
-    return (o, i, kl)
+def _u32(b, o):
+    return struct.unpack_from('<I', b, o)[0]
 
 
+def parse_pe(data):
+    if data[:2] != b'MZ':
+        raise RuntimeError('not an MZ file')
+    e_lfanew = _u32(data, 0x3C)
+    if data[e_lfanew:e_lfanew + 4] != b'PE\x00\x00':
+        raise RuntimeError('not a PE file')
+    coff = e_lfanew + 4
+    nsec = _u16(data, coff + 2)
+    opt_size = _u16(data, coff + 16)
+    opt = coff + 20
+    if _u16(data, opt) != 0x10B:
+        raise RuntimeError('not PE32')
+    res_rva = _u32(data, opt + 96 + 2 * 8)
+    if not res_rva:
+        raise RuntimeError('no resource directory')
+    sec = opt + opt_size
+    sections = []
+    for i in range(nsec):
+        o = sec + 40 * i
+        sections.append((_u32(data, o + 12), _u32(data, o + 8),
+                         _u32(data, o + 20), _u32(data, o + 16)))
+    return res_rva, sections
 
-# ---- 主流程 ----
-k = ctypes.WinDLL('kernel32', use_last_error=True)
-VirtualQueryEx = k.VirtualQueryEx
-ReadProcessMemory = k.ReadProcessMemory
 
-main_ab, second_ab, pid = find_aitxt()
-s_ab = f'0x{second_ab:08X}' if second_ab else 'N/A'
-print(f'PID={pid}  主区域=0x{main_ab:08X}  第二区域={s_ab}')
-
-h = k.OpenProcess(0x10 | 0x400, False, pid)
-if not h: raise RuntimeError('无法打开进程')
-
-all_rows = []
+def rva_to_off(rva, sections):
+    for va, vsize, raw, rawsize in sections:
+        if va <= rva < va + max(vsize, rawsize):
+            return raw + (rva - va)
+    raise RuntimeError(f'RVA 0x{rva:X} not mapped')
 
 
-# ---- 第一区域（分段读取 + VA 映射） ----
-class MBI(ctypes.Structure):
-    _fields_ = [('BaseAddress', ctypes.c_void_p), ('AllocationBase', ctypes.c_void_p),
-                ('AllocationProtect', ctypes.c_uint), ('RegionSize', ctypes.c_size_t),
-                ('State', ctypes.c_uint), ('Protect', ctypes.c_uint), ('Type', ctypes.c_uint)]
+def _iter_entries(data, base, dir_off):
+    total = _u16(data, base + dir_off + 12) + _u16(data, base + dir_off + 14)
+    for i in range(total):
+        e = base + dir_off + 16 + 8 * i
+        yield _u32(data, e), _u32(data, e + 4)
 
-# 分段读取主分配的已提交页
-chunks_r1 = []
-addr = main_ab
-while addr < main_ab + 0x100000:
-    m = MBI()
-    if not VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(m), ctypes.sizeof(MBI)): break
-    if m.AllocationBase != main_ab: break
-    if m.State == 0x1000 and addr >= main_ab + 0x10000:  # 从条目区开始
-        buf = ctypes.create_string_buffer(m.RegionSize)
-        br = ctypes.c_size_t(0)
-        if ReadProcessMemory(h, ctypes.c_void_p(addr), buf, m.RegionSize, ctypes.byref(br)) and br.value > 0:
-            chunks_r1.append((addr, buf.raw[:br.value]))
-    addr += m.RegionSize
 
-r1_base = chunks_r1[0][0] if chunks_r1 else 0  # Region 1 条目基址
+def _entry_name(data, base, field):
+    if field & 0x80000000:
+        p = base + (field & 0x7FFFFFFF)
+        n = _u16(data, p)
+        return data[p + 2:p + 2 + n * 2].decode('utf-16-le', 'replace')
+    return field
 
-# 展平 + VA 映射
-flat_r1 = bytearray()
-for _, c in chunks_r1: flat_r1.extend(c)
-flat_r1 = bytes(flat_r1)
 
-def flat_to_va_r1(fo):
-    acc = 0
-    for base, data in chunks_r1:
-        if fo < acc + len(data): return base + (fo - acc)
-        acc += len(data)
-    return 0
+def find_aitxt(data):
+    res_rva, sections = parse_pe(data)
+    base = rva_to_off(res_rva, sections)
+    for t_name, t_sub in _iter_entries(data, base, 0):
+        if _entry_name(data, base, t_name) != 'AITXT' or not (t_sub & 0x80000000):
+            continue
+        for i_name, i_sub in _iter_entries(data, base, t_sub & 0x7FFFFFFF):
+            if _entry_name(data, base, i_name) != 101 or not (i_sub & 0x80000000):
+                continue
+            for _l_name, l_sub in _iter_entries(data, base, i_sub & 0x7FFFFFFF):
+                e = base + l_sub
+                data_rva, size = _u32(data, e), _u32(data, e + 4)
+                return rva_to_off(data_rva, sections), size
+    raise RuntimeError('AITXT resource not found')
 
-print(f'第一区域: {len(flat_r1)} 字节, {len(chunks_r1)} 段')
 
-# 解析条目
-entries1 = []
-off = 0
-while off < len(flat_r1) - 12:
-    e = try_parse(flat_r1, off)
-    if e is None: off += 1; continue
-    o, i, kl = e
-    raw = flat_r1[off+12:off+12+kl]
-    try: txt = raw.decode('cp932', errors='replace').rstrip('\x00')
-    except: txt = ''
-    entries1.append((off, o, i, kl, txt, raw))
-    found = False
-    for pad in range(0, 9):
-        no = off + 12 + kl + pad
-        if try_parse(flat_r1, no) is not None: off = no; found = True; break
-    if not found: off += 1
+# ------------------------------------------------------------------- cipher
 
-# 分类
-pending_ctrl = False
-for off, outer, inner, kl, txt, raw in entries1:
-    txt_clean = txt.rstrip('\x00').rstrip('\x01')
-    va = flat_to_va_r1(off)
-    offset = va - r1_base
-    if inner == 2:
-        pending_ctrl = txt_clean.startswith('\\')
-        if not pending_ctrl:
-            all_rows.append((1, f'0x{offset:X}', outer, inner, kl, txt_clean))
-    elif inner == 1 and pending_ctrl:
-        pending_ctrl = False
-        all_rows.append((1, f'0x{offset:X}', outer, inner, kl, txt_clean))
-    elif inner == 1:
-        pending_ctrl = False
+class MT:
+    def __init__(self, seed):
+        self.mt = [0] * 624
+        self.mt[0] = seed & 0x7FFFFFFF
+        for i in range(1, 624):
+            self.mt[i] = (self.mt[i - 1] * 0x10DCD) & 0xFFFFFFFF
+        self.idx = 624
 
-r1 = sum(1 for r in all_rows if r[0] == 1)
-print(f'第一区域: 提取 {r1} 条')
+    def _twist(self):
+        mt = self.mt
+        for i in range(227):
+            y = (mt[i] & 0x80000000) | (mt[i + 1] & 0x7FFFFFFF)
+            mt[i] = mt[i + 397] ^ (y >> 1) ^ (0x9908B0DF if (y & 1) else 0)
+        for i in range(227, 623):
+            y = (mt[i] & 0x80000000) | (mt[i + 1] & 0x7FFFFFFF)
+            mt[i] = mt[i - 227] ^ (y >> 1) ^ (0x9908B0DF if (y & 1) else 0)
+        y = (mt[623] & 0x80000000) | (mt[0] & 0x7FFFFFFF)
+        mt[623] = mt[396] ^ (y >> 1) ^ (0x9908B0DF if (y & 1) else 0)
+        self.idx = 0
 
-# ---- 第二区域 ----
-if second_ab:
-    chunks_r2 = []
-    addr = second_ab
-    while addr < second_ab + 0x100000:
-        m = MBI()
-        if not VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(m), ctypes.sizeof(MBI)): break
-        if m.AllocationBase != second_ab: break
-        if m.State == 0x1000:
-            buf = ctypes.create_string_buffer(m.RegionSize)
-            br = ctypes.c_size_t(0)
-            if ReadProcessMemory(h, ctypes.c_void_p(addr), buf, m.RegionSize, ctypes.byref(br)) and br.value > 0:
-                chunks_r2.append((addr, buf.raw[:br.value]))
-        addr += m.RegionSize
+    def u32(self):
+        if self.idx >= 624:
+            self._twist()
+        y = self.mt[self.idx]
+        self.idx += 1
+        y ^= y >> 11
+        y ^= (y << 7) & 0x9D2C5680
+        y ^= (y << 15) & 0xEFC60000
+        y ^= y >> 18
+        return y & 0xFFFFFFFF
 
-    flat_r2 = bytearray()
-    for _, c in chunks_r2: flat_r2.extend(c)
-    flat_r2 = bytes(flat_r2)
+    def rand(self, rng):
+        prod = self.u32() * (rng - 1)
+        q, r = divmod(prod, 1 << 32)
+        return q + 1 if 2 * r >= (1 << 32) else q
 
-    def va_to_flat(va, chunks):
-        acc = 0
-        for base, data in chunks:
-            if base <= va < base + len(data):
-                return acc + (va - base)
-            acc += len(data)
-        return None
 
-    def flat_to_va_r2(fo):
-        acc = 0
-        for base, data in chunks_r2:
-            if fo < acc + len(data): return base + (fo - acc)
-            acc += len(data)
-        return 0
+def seed2_value():
+    mt = MT(0x265D)
+    r1 = mt.rand(0x7FFFFFFF)
+    h = hashlib.md5(str(r1).encode('ascii')).hexdigest()
+    digits = ''.join(c for c in h if c.isdigit())
+    if not digits:
+        return mt.rand(0x109A0)
+    return int(digits[:9] if len(digits) >= 10 else digits)
 
-    print(f'第二区域: {len(flat_r2)} 字节, {len(chunks_r2)} 段')
-    r2_base = chunks_r2[0][0] + 0x308 if chunks_r2 else 0  # Region 2 条目基址
 
-    # 线性扫描条目区（指针表之后）
-    entries2 = []
-    off = 0
-    if chunks_r2:
-        first_va = chunks_r2[0][0] + 0x308
-        acc = 0
-        for base, data in chunks_r2:
-            if base <= first_va < base + len(data):
-                off = acc + (first_va - base); break
-            acc += len(data)
+def keystream(n):
+    mt = MT(seed2_value())
+    return bytes(mt.rand(0x7FFFFFFF) & 0xFF for _ in range(n))
 
-    while off < len(flat_r2) - 12:
-        e = try_parse(flat_r2, off)
-        if e is None: off += 1; continue
-        o, i, kl = e
-        raw = flat_r2[off+12:off+12+kl]
-        try: txt = raw.decode('cp932', errors='replace').rstrip('\x00')
-        except: txt = ''
-        entries2.append((flat_to_va_r2(off), o, i, kl, txt, raw))
-        found = False
-        for pad in range(0, 9):
-            no = off + 12 + kl + pad
-            if try_parse(flat_r2, no) is not None: off = no; found = True; break
-        if not found: off += 1
 
-    print(f'第二区域: {len(entries2)} 原始条目')
-    skipped = 0
-    for va, outer, inner, kl, txt, raw in entries2:
-        txt_clean = txt.rstrip('\x00\x01')
-        # 1. contains binary garbage (null bytes or replacement chars)
-        if '\x00' in txt_clean or '\ufffd' in txt_clean:
-            skipped += 1; continue
-        # 2. halfwidth katakana → rejected (GBK data decoded as cp932)
-        if any('\uff65' <= c <= '\uff9f' for c in txt_clean):
-            skipped += 1; continue
-        # 3. no kana or kanji at all → rejected (process artifact)
-        has_jp = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in txt_clean)
-        if not has_jp:
-            skipped += 1; continue
-        offset = va - r2_base
-        all_rows.append((2, f'0x{offset:X}', outer, inner, kl, txt_clean))
-    print(f'第二区域: 提取 {len(entries2) - skipped} 条, 过滤 {skipped} 条')
+def decrypt(res):
+    return bytes(b ^ s for b, s in zip(res[::-1], keystream(len(res))))
 
-k.CloseHandle(h)
 
-# ---- 写 CSV ----
-outpath = os.path.join(os.path.dirname(__file__) or '.', 'aitxt_extract.csv')
-with open(outpath, 'w', encoding='utf-8', newline='') as f:
-    w = csv.writer(f)
-    w.writerow(['Region', 'Offset', 'Outer', 'Inner', 'KeyLen', 'Text'])
-    for row in all_rows:
-        w.writerow(row)
+def encrypt(plain):
+    return bytes(b ^ s for b, s in zip(plain, keystream(len(plain))))[::-1]
 
-r2 = sum(1 for r in all_rows if r[0] == 2)
-print(f'\n合计: {len(all_rows)} 条 (R1={r1}, R2={r2})')
-print(f'Region 1 基址: 0x{r1_base:08X}')
-if second_ab:
-    print(f'Region 2 基址: 0x{r2_base:08X}')
-print(f'保存至: {outpath}')
+
+# --------------------------------------------------------------------- main
+
+def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    dll_path = os.path.join(here, 'input', 'first.dll')
+    out_path = os.path.join(here, 'aitxt_extract.txt')
+
+    data = open(dll_path, 'rb').read()
+    off, size = find_aitxt(data)
+    blob = data[off:off + size]
+    if len(blob) != size:
+        raise RuntimeError(f'short read: {len(blob)} < {size}')
+
+    plain = decrypt(blob)
+    if encrypt(plain) != blob:
+        raise RuntimeError('round-trip check failed (unexpected cipher parameters)')
+
+    io.open(out_path, 'w', encoding='utf-8', newline='').write(
+        plain.decode('cp932', 'replace'))
+    n_lines = len(plain.split(b'\r\n'))
+    print(f'OK: {dll_path}')
+    print(f'    AITXT at file offset 0x{off:X}, {size} bytes, {n_lines} lines')
+    print(f'    -> {out_path}')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

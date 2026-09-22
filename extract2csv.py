@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Extract SJIS strings from first.dll to CSV.
-Marker entries (FF FF FF FF header) → CODE section.
-DFM entries (TPF0 resource strings) → from .rsrc section.
+"""从 first.dll 提取 Shift_JIS 字符串到 CSV。
+标记条目（FF FF FF FF 头）→ CODE 段。
+DFM 条目（TPF0 资源字符串）→ .rsrc 段。
 """
 import struct, csv, os
 
 DLL_IN = os.path.join(os.path.dirname(__file__), 'input', 'first.dll')
 CSV_OUT = os.path.join(os.path.dirname(__file__), 'extract.csv')
 
-# FFFF entries to include even without Japanese characters
+# 即使没有日文字符也要收录的 FFFF 条目
 MANUAL_OFFSETS = [
-    0x6F57C,  # URL: Geocities -> CompJapan Wikipedia
-    0x7E020,  # URL: Search pt1: Google -> Bing
-    0x7E05C,  # URL: Search pt2
+    0x6F57C,  # URL：Geocities -> CompJapan Wikipedia
+    0x7E020,  # URL：搜索第 1 处：Google -> Bing
+    0x7E05C,  # URL：搜索第 2 处
 ]
 
 def extract_marker_strings(data, code_start, code_end, force_offsets=None):
-    """Extract standard strings preceded by FF FF FF FF marker.
-    force_offsets: set of data offsets to include even without Japanese text."""
+    """提取以 FF FF FF FF 为前缀的标准字符串。
+    force_offsets：即使没有日文也强制收录的数据偏移集合。"""
     rows = []
     force = force_offsets or set()
     off = code_start
@@ -44,13 +44,13 @@ def extract_marker_strings(data, code_start, code_end, force_offsets=None):
 
 
 def extract_dfm_strings(data):
-    """Extract Japanese strings from TPF0 (Delphi DFM) resources in .rsrc.
+    """从 .rsrc 里的 TPF0（Delphi DFM）资源中提取日文字符串。
 
-    In TPF0, string property values are stored as:
-      \x06 <1B len> <SJIS_text>
-    We extract the text position (after the len byte) with its original SJIS length.
+    TPF0 中字符串属性值的存放格式为：
+      \x06 <1 字节长度> <SJIS 文本>
+    我们取文本位置（长度字节之后）及其原始 SJIS 长度。
     """
-    # Find TPF0 headers in .rsrc (last section)
+    # 在 .rsrc（最后一个节）里找 TPF0 头
     rsrc_start = 0xBB000
     rsrc_end = 0xD9800
     
@@ -92,7 +92,7 @@ def extract_dfm_strings(data):
 with open(DLL_IN, 'rb') as f:
     data = f.read()
 
-# Find CODE section range
+# 找到 CODE 段范围
 e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
 num_sec = struct.unpack_from('<H', data, e_lfanew + 6)[0]
 sec_off = e_lfanew + 0xF8
@@ -105,15 +105,15 @@ for i in range(num_sec):
         break
 assert code_start is not None, 'CODE section not found'
 
-# 1. Extract marker-based strings (CODE section)
+# 1. 提取基于标记的字符串（CODE 段）
 all_rows = extract_marker_strings(data, code_start, code_end, force_offsets=set(MANUAL_OFFSETS))
 
-# 2. Append DFM entries from .rsrc
+# 2. 追加 .rsrc 中的 DFM 条目
 dfm_rows = extract_dfm_strings(data)
 all_rows += [(off, slen, typ, text) for off, slen, typ, text in dfm_rows]
 
-# 3. Append MS P Gothic font name entries (all .rsrc & CODE)
-# Skip offsets already covered by DFM extraction to avoid duplicates
+# 3. 追加 MS P Gothic 字体名条目（.rsrc 与 CODE 中全部）
+# 跳过已被 DFM 提取覆盖的偏移，避免重复
 existing_offsets = {off for off, _, _, _ in all_rows}
 font_pat = b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e'
 font_rows = []
@@ -129,7 +129,7 @@ while True:
     pos = i + 1
 all_rows += font_rows
 
-# Write CSV
+# 写出 CSV
 os.makedirs(os.path.dirname(CSV_OUT), exist_ok=True)
 with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     w = csv.writer(f)
