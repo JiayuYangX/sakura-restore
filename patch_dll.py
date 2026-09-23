@@ -34,6 +34,16 @@ RSS 链接补丁（OnAnchorSelect 打开浏览器）：
   first.dll 对该 ID 匹配名字失败后落到兜底「……ん？」，SSP 便不再打开链接。
   这里把兜底分支入口重定向到 .cave 中的第二个桩：若 Ref0 以 "http" 开头，
   在节内缓冲里拼出 "\\![open,browser,<URL>]" 作为响应脚本返回；否则走原兜底。
+
+游戏 / 双击相关补丁（.cave 内若干桩，详见各构建函数文档串）：
+  - 桩A（响应监控，挂 0x47A399）：输入框标志、视力游戏状态（MARK/EYEBUSY）、
+    游戏退出收尾（PENDING+GAMELEFT）、游戏菜单缓存、视力取消输入框按“空提交”
+    处理（响应 \\![raise,OnEyesightgameInput,]）。
+  - 桩B（双击判定，挂 0x4782BD）：菜单/输入框/视力答题中双击吞掉；打字/问答
+    双击重放该游戏菜单；视力已进入但未弹框时交还原版脱身脚本。
+  - 关窗体辅助桩（由桩A 的 .setpend 调用）：退出时 FindWindowA + WM_CLOSE 关
+    Ttypinggameform / Teyesightform / Tcountdownform；CloseQuery 跳板保证
+    GAMELEFT 期间打字框可关。
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
 
@@ -146,29 +156,38 @@ CAVE2_OFF = 0x20                   # 第二桩在 .cave 内的偏移
 PREFIX_OFF = 0x100                 # "\![open,browser," 常量
 BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 
-# ---- 双击判定补丁（只屏蔽 choosing + 搜索对话框；纯读请求/响应，不碰栈残留）----
-CAVE_B_OFF = 0x500                 # 双击判定桩（读请求 Status + 搜索框标志）
-CAVE_A_OFF = 0x600                 # 响应监控桩（维护搜索框标志）
-FLAG_OFF = 0x8C0                   # 搜索框标志（dword：0=关 1=开）
-MARK_OFF = 0x8C4                   # 当前游戏标记（1=视力游戏；OnQu*/OnTy* 清 0）
-                                   # 视力游戏进行中双击直接吞掉（等它自己结束）
-PENDING_OFF = 0x8C8                # 退出待处理字节（1=本次退出响应需前置关闭输入框命令）
-GAMELEFT_OFF = 0x8CC               # 游戏已退出字节（1=重置前不再让游戏进度事件继续）
-SWALLOW_OFF = 0x8CD                # 本次响应待吞字节（GAMELEFT 期间的游戏进度事件）
-TYPING_CLOSEQ_OFF = 0x6E200        # formCloseQuery：CanClose := 窗体.已提交标志[Self+0x321]
-TYPING_CLOSEQ_ORIG = bytes.fromhex('8A 80 21 03 00 00 88 01 C3')
-TYPING_CLOSEQ_VA = 0x46EE00
-CAVE_Q_OFF = 0x10C0                # 跳板桩：GAMELEFT 时放行关闭（配合 WM_CLOSE 静音关框）
-CLOSE_CMD_OFF = 0x1010             # 常量：退出时前置到响应的收尾命令
+# ---- 游戏/双击相关补丁的 .cave 数据区 ----
+# .cave 布局（0x2000 字节追加节；改动后应做区间重叠检查）：
+#   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x100 "\![open,browser,"
+#   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
+#   0x400 关窗体辅助桩 | 0x500 双击判定桩B | 0x600 响应监控桩A
+#   0x940 标志组(FLAG/MARK/PENDING/GAMELEFT/SWALLOW/EYEBUSY)
+#   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
+#   0x1050 CLOSE_CMD | 0x10C0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100)
+CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
+CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
+FLAG_OFF = 0x940                   # 输入框标志（dword：1=有 SSP 输入框打开）
+MARK_OFF = 0x944                   # 视力游戏标记（1=已进入视力游戏）
+PENDING_OFF = 0x948                # 退出待处理字节（1=本次退出响应前置 CLOSE_CMD）
+GAMELEFT_OFF = 0x94C               # 游戏已退出字节（1=吞掉残留游戏事件响应）
+SWALLOW_OFF = 0x94D                # 本次响应待吞字节
+EYEBUSY_OFF = 0x94E                # 视力题已弹出字节（1=C图窗+输入框在 → 双击禁用）
+CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x960 / 数据@0x964）
+CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
+EYE_CANCEL_STR_OFF = 0x140         # 空提交脚本 dstr（视力取消输入框时回它）
+EYE_CANCEL_DATA_OFF = 0x148        # 上面的数据指针（桩A 里 LStrAsg 用）
 # 说明：问答游戏的答题框是 SSP 的 inputbox；打字游戏的框是 DLL 自己的窗体
 #      （由辅助桩 WM_CLOSE 关闭，不靠这些命令）。多关几个箱型无副作用。
 CLOSE_CMD = (b'\\![quicksection,false]'
              b'\\![close,communicatebox]'
              b'\\![close,teachbox]'
              b'\\![close,inputbox,__SYSTEM_ALL_INPUT__]')
-PBUF_RC_OFF = 0x10F8               # 前置拼接缓冲：refcount（须在 CLOSE_CMD 之后）
-PBUF_LEN_OFF = 0x10FC              # 长度
-PBUF_DATA_OFF = 0x1100             # 数据（cap 到 0x2000）
+PBUF_LEN_OFF = 0x10FC              # PENDING 前置拼接缓冲：长度（rc 在 -4，数据在 +4）
+PBUF_DATA_OFF = 0x1100             # 数据（cap 0xE00）
+TYPING_CLOSEQ_OFF = 0x6E200        # formCloseQuery：CanClose := 窗体.已提交标志[Self+0x321]
+TYPING_CLOSEQ_ORIG = bytes.fromhex('8A 80 21 03 00 00 88 01 C3')
+TYPING_CLOSEQ_VA = 0x46EE00
+CAVE_Q_OFF = 0x10C0                # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -235,35 +254,31 @@ def _build_url_stub(rva):
 def _build_resp_monitor_stub(rva):
     """响应监控桩（挂在 0x47A399，request() 帧内，EBP 有效）：
 
-       1) 事件名（[ebp-0x4c]）以 OnUs / OnGo / OnQu / OnTy / OnEy 开头
-          → 输入框标志清零（FLAG_OFF = 0）。覆盖：
-            OnUserInput*（取消/超时）、OnGoogle（搜索提交）、
-            OnQuiz*、OnTypinggame*、OnEyesightgame*（游戏输入框提交与退出等）。
-          （按前缀清可保证游戏中途退出/提交后标志不会卡住——曾出现
-            "问答/视力退出后双击打不开主菜单"的卡标志问题。）
-          OnQuizLeave / OnTypinggameLeave（游戏「退出」）时另置 PENDING 和
-          GAMELEFT：
-            - PENDING → 该次退出响应最前面插入 CLOSE_CMD（关普通输入框）；
-            - GAMELEFT → 游戏退出后，一旦再有游戏自己的事件（OnQuiz*/
-              OnTypinggame* 里非 Leave/Enter 的进度事件，如提交/下一题/
-              超时）进来，就把「本次响应」整条吞掉（清响应）。原因：原版
-              退出处理器不会真正终止游戏流程，残留输入框上回车/超时会继续
-              raise 下一题、不断出新题（打字框还不是 inputbox，close 命令
-              关不掉）。吞掉进度响应后游戏链就断了，游戏窗体由 .setpend 的辅助桩 WM_CLOSE 关闭（见 _build_closebox_stub）；重新进入游戏时（OnQuizEnter /
-              OnTypinggameEnter）清 GAMELEFT。
-        2) 否则响应（[ebp-0x1c]）里含 "\\![open,inputbox"（前缀）→ 标志置 1。
-           注：实测挂载点处响应里只出现该前缀（",OnGoogle,-1]" 等后缀是之后
-           才拼上的），所以此判定对所有输入框（搜索/问答/游戏）一视同仁；
-           这一点与原版 MATERIA 略有差异（其游戏输入框可双击）。
-       3) 最后复刻被覆盖的 cmp/jne 并跳回原路径。
+       【事件分流】读事件名（[ebp-0x4c]，SEH 保护）：
+         - OnUs*（取消 SSP 输入框）：EYEBUSY=1（视力输入框被取消）→ 按"提交
+           空值"处理：响应 := \\![raise,OnEyesightgameInput,]，DLL 走与超时/
+           空输入相同的收尾（反馈+leave,passivemode+关视力窗）；否则只清 FLAG。
+         - OnGo*（搜索提交）及各游戏事件：清 FLAG。
+         - OnQu* / OnTy*：Leave → PENDING+GAMELEFT+关窗体（见 .setpend）；
+           Enter → 清 GAMELEFT；其余（进度事件）→ 见 GAMELEFT。
+         - OnEy*（视力）：Next → MARK=1+EYEBUSY=1（题已弹框）；Input →
+           MARK=0+EYEBUSY=0（本局结束）；其余（Enter 等）→ MARK=1+EYEBUSY=0
+           （未弹框，双击交还原版脱身脚本）。
 
-       【防崩】[ebp-0x4c] 对没有 ID 的请求（SSP 协议探测 GET Version
-       SHIORI/2.6 等）是未初始化的栈残留，直接解引用会崩（曾导致 SSP
-       降级 2.2、ghost 打不开）。这里给这段读取装了 SEH 保护：
-       一旦异常，处理器把 Eip 改到收尾处，安全跳过事件名判定。
+       【固定动作】
+         - PENDING：把 CLOSE_CMD 前置到本次响应（仅一次，关普通输入框）；
+         - GAMELEFT+SWALLOW：游戏已退出后，游戏自己的进度事件（提交/下一题/
+           超时）响应整条清空（→204），断掉游戏链；Enter 时清 GAMELEFT；
+         - 缓存扫描：响应含 \\![*]\\q[ → 整条复制到菜单缓存（供双击重放）；
+         - 输入框扫描：响应含 \\![open,inputbox → FLAG=1；
+         - 最后复刻被覆盖的 cmp/jne，跳回 0x47A3B1（响应非空）/0x47A39F（空）。
 
-       【实现】所有分支用标签名 + 回填（fixups），指令长度由 len(b) 决定，
-       避免手算偏移滚雪球；分支距离超界会在回填时 assert 报错。
+       【防崩】[ebp-0x4c] 对没有 ID 的请求（SSP 协议探测 GET Version 等）是
+       未初始化栈残留，直接解引用会崩（曾导致 SSP 降级 2.2、ghost 打不开）。
+       这里给整段读取装了 SEH 保护：异常时处理器把 Eip 改到收尾处，安全跳过。
+
+       【实现】分支全部用标签 + 回填（fixups），指令长度变化不再手算偏移；
+       分支距离超界会在回填时 assert 报错。
     """
     b = bytearray()
     va = lambda i: rva + i
@@ -298,6 +313,7 @@ def _build_resp_monitor_stub(rva):
 
     disp = FLAG_OFF - (CAVE_A_OFF + 0x0B)
     pend = PENDING_OFF - (CAVE_A_OFF + 0x0B)   # GAMELEFT 就在 pend+4
+    eyebusy = EYEBUSY_OFF - (CAVE_A_OFF + 0x0B)   # 视力输入框已弹出标志
 
     # --- 序言 + SEH 安装（handler 地址稍后回填）---
     b += b'\x50\x51\x52\x56\x57\x53'                    # push eax/ecx/edx/esi/edi/ebx
@@ -313,16 +329,33 @@ def _build_resp_monitor_stub(rva):
     b += b'\x85\xF6'                                    # test esi,esi
     jcc32(0x0F, 0x84, 'after')                          # jz .after（空名→跳过）
     b += b'\x81\x3E\x4F\x6E\x55\x73'                    # cmp [esi],'OnUs'
-    jcc8(0x74, 'clrf')                                  # je .clrf
+    jcc8(0x74, 'chkus')                                 # je .chkus（取消输入框要按游戏状态分流）
     b += b'\x81\x3E\x4F\x6E\x47\x6F'                    # cmp [esi],'OnGo'
     jcc8(0x74, 'clrf')                                  # je .clrf
     b += b'\x81\x3E\x4F\x6E\x51\x75'                    # cmp [esi],'OnQu'
-    jcc8(0x74, 'chkq')                                  # je .chkq
+    jcc32(0x0F, 0x84, 'chkq')                           # je .chkq（距离远，须 rel32）
     b += b'\x81\x3E\x4F\x6E\x54\x79'                    # cmp [esi],'OnTy'
-    jcc8(0x74, 'chkt')                                  # je .chkt
+    jcc32(0x0F, 0x84, 'chkt')                           # je .chkt（距离远，须 rel32）
     b += b'\x81\x3E\x4F\x6E\x45\x79'                    # cmp [esi],'OnEy'
-    jcc8(0x74, 'setm')                                  # je .setm
+    jcc32(0x0F, 0x84, 'chkey')                          # je .chkey（视力分流，距离远须 rel32）
     jmp32('after')                                      # 都不是→跳过（距离远，须 rel32）
+    # .chkus：OnUs*（OnUserInput 取消输入框）按游戏状态分流：
+    #   视力输入框被取消（EYEBUSY=1）→ 按"提交空值"处理：响应 :=
+    #   `\![raise,OnEyesightgameInput,]`，SSP 触发该事件后 DLL 走和超时/空输入
+    #   一样的收尾（反馈 + leave,passivemode + 关视力窗）。原版 materia 输入框
+    #   无法关闭，所以 DLL 对取消只回 204——这里替它补上。
+    #   其余（搜索框等）→ 普通清 FLAG。
+    label('chkus')
+    b += b'\x80\xBB' + struct.pack('<i', eyebusy)       # cmp byte [ebx+eyebusy],0
+    b += b'\x00'
+    jcc32(0x0F, 0x84, 'clrf')                           # je .clrf（距离远，须 rel32）
+    b += b'\xC6\x83' + struct.pack('<i', eyebusy) + b'\x00'  # mov byte [ebx+eyebusy],0
+    b += b'\x8D\x93' + struct.pack('<i', disp)          # lea edx,[ebx+flag]
+    b += b'\xC7\x02\x00\x00\x00\x00'                    # mov dword [edx],0
+    b += b'\x8D\x45\xE4'                                # lea eax,[ebp-0x1c]（响应）
+    b += b'\x8D\x93' + struct.pack('<i', EYE_CANCEL_DATA_OFF - (CAVE_A_OFF + 0x0B))  # lea edx,空提交脚本
+    call_abs(0x403C58)                                  # call LStrAsg（响应 := \![raise,OnEyesightgameInput,]）
+    jmp32('after')
     # .clrf：输入框标志清零
     label('clrf')
     b += b'\x8D\x93' + struct.pack('<i', disp)          # lea edx,[ebx+flag]
@@ -335,27 +368,39 @@ def _build_resp_monitor_stub(rva):
     b += b'\x8D\x93' + struct.pack('<i', disp + 4)      # lea edx,[ebx+flag+4]（mark）
     b += b'\xC7\x02\x00\x00\x00\x00'                    # mov dword [edx],0
     jmp32('after')                                      # 距离远，须 rel32
-    # .setm：标志清零 + 置视力标记（mark=1）
-    label('setm')
+    # .chkey：OnEy*（视力）分流（事件名第 15 字符起在 [esi+14]）：
+    #   默认：FLAG=0、MARK=1（视力进行中）、EYEBUSY=0（未弹框 → 双击交还原版）；
+    #   Input → MARK=0（本局结束）；Next → EYEBUSY=1（题已弹框 → 双击禁用）。
+    label('chkey')
     b += b'\x8D\x93' + struct.pack('<i', disp)          # lea edx,[ebx+flag]
-    b += b'\xC7\x02\x00\x00\x00\x00'                    # mov dword [edx],0
-    b += b'\x8D\x93' + struct.pack('<i', disp + 4)      # lea edx,[ebx+flag+4]（mark）
-    b += b'\xC7\x02\x01\x00\x00\x00'                    # mov dword [edx],1
-    jmp32('after')                                      # 到此为止（别落进 Qu/Ty 分流把标记清掉）
+    b += b'\xC7\x02\x00\x00\x00\x00'                    # FLAG=0
+    b += b'\x8D\x93' + struct.pack('<i', disp + 4)      # lea edx,[ebx+mark]
+    b += b'\xC7\x02\x01\x00\x00\x00'                    # MARK=1
+    b += b'\xC6\x83' + struct.pack('<i', eyebusy) + b'\x00'  # EYEBUSY=0
+    b += b'\x81\x7E\x0E\x49\x6E\x70\x75'                # cmp [esi+14],'Inpu'
+    jcc8(0x75, 'chknext')                               # jne .chknext
+    b += b'\x8D\x93' + struct.pack('<i', disp + 4)      # lea edx,[ebx+mark]
+    b += b'\xC7\x02\x00\x00\x00\x00'                    # MARK=0
+    jmp32('after')
+    label('chknext')
+    b += b'\x81\x7E\x0E\x4E\x65\x78\x74'                # cmp [esi+14],'Next'
+    jcc32(0x0F, 0x85, 'after')                          # jne .after（距离远，rel32）
+    b += b'\xC6\x83' + struct.pack('<i', eyebusy) + b'\x01'  # EYEBUSY=1
+    jmp32('after')
     # .chkq：OnQuiz* 分流（Leave→置位；Enter→清 GAMELEFT；其余→.gamem）
     label('chkq')
     b += b'\x81\x7E\x04\x69\x7A\x4C\x65'                # cmp [esi+4],'izLe'（OnQuizLeave）
-    jcc8(0x74, 'setpend')                               # je .setpend
+    jcc32(0x0F, 0x84, 'setpend')                          # je .setpend（距离远，rel32）
     b += b'\x81\x7E\x04\x69\x7A\x45\x6E'                # cmp [esi+4],'izEn'（OnQuizEnter）
-    jcc8(0x74, 'clrgl')                                 # je .clrgl（清 GAMELEFT）
-    jmp8('gamem')                                       # 其余 OnQuiz* → .gamem
+    jcc32(0x0F, 0x84, 'clrgl')                            # je .clrgl（距离远，rel32）（清 GAMELEFT）
+    jmp32('gamem')                                      # 其余 OnQuiz* → .gamem
     # .chkt：OnTypinggame* 分流
     label('chkt')
     b += b'\x81\x7E\x0C\x4C\x65\x61\x76'                # cmp [esi+12],'Leav'（OnTypinggameLeave）
-    jcc8(0x74, 'setpend')                               # je .setpend
+    jcc32(0x0F, 0x84, 'setpend')                          # je .setpend（距离远，rel32）
     b += b'\x81\x7E\x0C\x45\x6E\x74\x65'                # cmp [esi+12],'Ente'（OnTypinggameEnter）
-    jcc8(0x74, 'clrgl')                                 # je .clrgl
-    jmp8('gamem')                                       # 其余 OnTypinggame* → .gamem
+    jcc32(0x0F, 0x84, 'clrgl')                          # je .clrgl（距离远，rel32）
+    jmp32('gamem')                                      # 其余 OnTypinggame* → .gamem
     # .gamem：游戏已退出（GAMELEFT）期间，游戏自己的事件（进度/下一题/超时等）
     #         继续跑的话会不断出新题、生成新输入框——本次响应标记为待吞
     label('gamem')
@@ -369,7 +414,7 @@ def _build_resp_monitor_stub(rva):
     b += b'\x8D\x93' + struct.pack('<i', pend)          # lea edx,[ebx+pending]
     b += b'\xC6\x02\x01'                                # mov byte [edx],1（PENDING）
     b += b'\xC6\x42\x04\x01'                            # mov byte [edx+4],1（GAMELEFT）
-    # 立即关游戏窗体：辅助桩按类名找 Ttypinggameform/Teyesightform 并投递
+    # 立即关游戏窗体：辅助桩按类名找 Ttypinggameform/Teyesightform/Tcountdownform 并投递
     # WM_CLOSE（异步）。打字框的 CloseQuery 由 .cave+0x10C0 的桩在 GAMELEFT
     # 时放行；视力窗本来就无拦截。全程无键盘消息，故没有编辑框回车提示音。
     call_abs(rva - 0x200)                               # 辅助桩在 cave+0x400（stubA 起点-0x200）
@@ -418,7 +463,7 @@ def _build_resp_monitor_stub(rva):
     b += b'\x8D\x45\xE4'                                # lea eax,[ebp-0x1c]
     call_abs(0x403BC0)                                  # call LStrClr（清响应 → 204）
     jmp32('done')                                       # 跳过缓存/标志扫描
-    # --- 缓存扫描：\![*]\q[ → 复制整段响应到游戏菜单缓存（cave+0x904）---
+    # --- 缓存扫描：\![*]\q[ → 复制整段响应到菜单缓存（cave+CACHE_OFF）---
     label('scan')
     b += b'\x8B\x75\xE4'                                # mov esi,[ebp-0x1c]
     b += b'\x85\xF6'                                    # test esi,esi
@@ -440,11 +485,11 @@ def _build_resp_monitor_stub(rva):
     jcc8(0x75, 'cs')                                    # jnz .cs
     jmp8('flag')
     label('copy')
-    b += b'\x81\xF9\xFC\x06\x00\x00'                    # cmp ecx,0x6FC
+    b += b'\x81\xF9\xE0\x06\x00\x00'                    # cmp ecx,0x6E0
     jcc8(0x76, 'cl')                                    # jbe .cl
-    b += b'\xB9\xFC\x06\x00\x00'                        # mov ecx,0x6FC
+    b += b'\xB9\xE0\x06\x00\x00'                        # mov ecx,0x6E0
     label('cl')
-    b += b'\x8D\x93' + struct.pack('<i', 0x900 - (CAVE_A_OFF + 0x0B))  # lea edx,[ebx+cache]
+    b += b'\x8D\x93' + struct.pack('<i', CACHE_OFF - (CAVE_A_OFF + 0x0B))  # lea edx,[ebx+cache]
     b += b'\xC7\x42\xFC\xFF\xFF\xFF\xFF'                # mov dword [edx-4],-1（refcount=-1）
     b += b'\x89\x0A'                                    # mov [edx],ecx（长度）
     b += b'\x8D\x7A\x04'                                # lea edi,[edx+4]（数据）
@@ -509,7 +554,7 @@ def _build_resp_monitor_stub(rva):
             struct.pack_into('<b', b, pos, v)
         else:
             struct.pack_into('<i', b, pos, target - (pos + 4))
-    assert len(b) == 0x259, hex(len(b))
+    assert len(b) == 0x2E3, hex(len(b))
     return bytes(b)
 
 
@@ -607,111 +652,170 @@ def _build_closebox_stub(cave_va):
         struct.pack_into('<i', b, pos, t - (pos + 4))
     assert len(b) <= 0x100, hex(len(b))
     # ================= 数据区（.cave+0x110）=================
-    strs = bytearray(b'\x00' * (0x140 - 0x110))
+    strs = bytearray(b'\x00' * (0x1F2 - 0x110))
     strs[0x000:0x010] = b'Ttypinggameform\x00'
     strs[0x010:0x01F] = b'Teyesightform\x00'
     strs[0x020:0x02E] = b'Tcountdownform\x00'
+    # 空提交脚本（视力输入框被取消时回它，SSP 触发 OnEyesightgameInput 空值）
+    eyecancel = b'\\![raise,OnEyesightgameInput,]'
+    o = EYE_CANCEL_STR_OFF - 0x110
+    strs[o:o + 8 + len(eyecancel) + 2] = (
+        struct.pack('<i', -1) + struct.pack('<I', len(eyecancel)) + eyecancel + b'\x00\x00')
     return bytes(b), bytes(strs)
 
 
 def _build_dc_status_stub(rva):
     """双击入口桩（挂在 0x4782BD，request() 帧内，EBP 有效）：
 
-       request() 的参数约定（经 0x45F220 + System.Move 0x40283C 反汇编确认，
-       且已被旧版补丁在 SSP 实测证实）：
-         [ebp+8]  = 请求字符串指针（PChar）
-         [ebp+0xC] = 指向请求长度的指针（PDWORD）
-       判定优先级：
-       1) 请求含 "Status: choosing"（选择肢/菜单等待中）→ 吞掉（204）；
-       2) 请求含 "passive"（游戏进行中）：
-          - 游戏标记（MARK_OFF）=1（视力游戏）→ 吞掉（视力是单题小游戏，
-            双击不做任何事，等它自己结束）；
-          - 标记=0（打字/问答）→ 菜单缓存（.cave+0x904，由桩A 维护）非空
-            则用 LStrAsg 把缓存的游戏菜单写回响应（SSP 显示该游戏那层
-            菜单，便于点「退出」）；缓存为空 → 吞掉。
-       3) 输入框标志（FLAG_OFF）为 1 → 吞掉（204）；
-       4) 其余复刻原指令后继续（跳 0x4782C5），走 ghost 原逻辑（弹主菜单）。
+      分流（按优先级）：
+      1) 请求含 "Status: choosing"（选择肢/菜单等待中）→ 吞掉（204）；
+      2) 请求含 "passive"（游戏进行中）：
+         - EYEBUSY=1（视力题目的窗口+输入框已弹出）→ 吞掉（防误触退出）；
+         - MARK=1（视力已进入但还没弹框）→ 交还原版逻辑（原版双击会给
+           "close inputbox + leave,passivemode + 重新 raise 双击" 的脱身脚本）；
+         - MARK=0（打字/问答）→ 菜单缓存（cave+0x960）非空则 LStrAsg 写回
+           缓存菜单（方便点「退出」）；为空则吞掉。
+      3) 输入框标志 FLAG=1（搜索等 SSP 输入框打开）→ 吞掉；
+      4) 其余 → 清响应后跳 0x4782C5，走 ghost 原逻辑（弹主菜单）。
+
+      注意：不要动 DLL 内部"点击/菜单状态机"字节 0x4B29E8——它在菜单流程里
+      有自己的状态转移（0/1/2/3），在拦截出口清零会破坏"菜单→开始"流程
+      （曾导致点 Period 进不去）。
+
+      请求扫描约定：[ebp+8]=请求字符串指针（PChar）、[ebp+0xC]=指向长度的
+      指针（DWORD*）（经 0x45F220 + System.Move 0x40283C 反汇编确认）。
     """
     b = bytearray()
+    labels = {}
+    fixups = []
     va = lambda i: rva + i
 
-    def rel32(target, at):
-        return struct.pack('<i', target - va(at + 4))
+    def label(n):
+        labels[n] = len(b)
 
-    disp = FLAG_OFF - (CAVE_B_OFF + 0x40)
-    b += b'\x57'                                        # 0x00: push edi
-    b += b'\x56'                                        # 0x01: push esi
-    b += b'\x8B\x7D\x08'                                # 0x02: mov edi,[ebp+8]（请求指针）
-    b += b'\x8B\x4D\x0C'                                # 0x05: mov ecx,[ebp+0xC]（长度指针）
-    b += b'\x8B\x09'                                    # 0x08: mov ecx,[ecx]（长度）
-    b += b'\x83\xF9\x10'                                # 0x0A: cmp ecx,16
-    b += b'\x72\x2C'                                    # 0x0D: jb .reqdone（0x3B）
-    b += b'\x8D\x74\x0F\xF0'                            # 0x0F: lea esi,[ecx+edi-16]
-    b += b'\x81\x3F\x53\x74\x61\x74'                    # 0x13: cmp [edi],'Stat'
-    b += b'\x75\x1B'                                    # 0x19: jne .next（0x36）
-    b += b'\x81\x7F\x04\x75\x73\x3A\x20'                # 0x1B: cmp [edi+4],'us: '
-    b += b'\x75\x12'                                    # 0x22: jne .next
-    b += b'\x81\x7F\x08\x63\x68\x6F\x6F'                # 0x24: cmp [edi+8],'choo'
-    b += b'\x75\x09'                                    # 0x2B: jne .next
-    b += b'\x81\x7F\x0C\x73\x69\x6E\x67'                # 0x2D: cmp [edi+0xC],'sing'
-    b += b'\x74\x69'                                    # 0x34: je .suppress（0x9F）
-    b += b'\x47'                                        # 0x36: .next: inc edi
-    b += b'\x39\xF7'                                    # 0x37: cmp edi,esi
-    b += b'\x76\xD8'                                    # 0x39: jbe .scan（0x13）
-    b += b'\xE8\x00\x00\x00\x00'                        # 0x3B: .reqdone: call $+5
-    b += b'\x58'                                        # 0x40: pop eax（= va(0x40)）
-    b += b'\x05' + struct.pack('<i', disp)              # 0x41: add eax,flag（=cave+0x880）
-    # --- passive 扫描（游戏进行中：请求含 "passive"；优先于输入框判定）---
-    # 注意：Status 可能直接是 "passive,balloon(...)"（前面无 talking/choosing），
-    # 所以不能匹配 ",passive"（带逗号），要匹配裸的 "passive"。
-    b += b'\x8B\x7D\x08'                                # 0x46: mov edi,[ebp+8]
-    b += b'\x8B\x4D\x0C'                                # 0x49: mov ecx,[ebp+0xC]
-    b += b'\x8B\x09'                                    # 0x4C: mov ecx,[ecx]
-    b += b'\x83\xF9\x07'                                # 0x4E: cmp ecx,7
-    b += b'\x72\x5B'                                    # 0x51: jb .flagchk（0xAE）
-    b += b'\x8D\x74\x0F\xF9'                            # 0x53: lea esi,[ecx+edi-7]
-    b += b'\x8B\xD1'                                    # 0x57: mov edx,ecx
-    b += b'\x83\xEA\x06'                                # 0x59: sub edx,6
-    b += b'\x81\x3F\x70\x61\x73\x73'                    # 0x5C: .ps: cmp [edi],'pass'
-    b += b'\x75\x0E'                                    # 0x62: jne .pn（0x72）
-    b += b'\x66\x81\x7F\x04\x69\x76'                    # 0x64: cmp word [edi+4],'iv'
-    b += b'\x75\x06'                                    # 0x6A: jne .pn（0x72）
-    b += b'\x80\x7F\x06\x65'                            # 0x6C: cmp byte [edi+6],'e'
-    b += b'\x74\x06'                                    # 0x70: je .passive（0x78）
-    b += b'\x47'                                        # 0x72: .pn: inc edi
-    b += b'\x4A'                                        # 0x73: dec edx
-    b += b'\x75\xE6'                                    # 0x74: jnz .ps（0x5C）
-    b += b'\xEB\x36'                                    # 0x76: jmp .flagchk（0xAE）
-    # --- passive：按游戏标记分流（1=视力→吞掉；0=重放缓存菜单）---
-    b += b'\x83\xB8\x04\x00\x00\x00\x00'                # 0x78: .passive: cmp dword [eax+4],0（mark）
-    b += b'\x75\x1E'                                    # 0x7F: jne .suppress（0x9F）（视力：双击无效）
-    # --- 重放缓存的游戏菜单（长度=0 时退化为吞掉）---
-    b += b'\x83\xB8\x40\x00\x00\x00\x00'                # 0x81: .replay: cmp dword [eax+0x40],0（缓存长度@0x900）
-    b += b'\x74\x15'                                    # 0x88: je .suppress（0x9F）
-    b += b'\x8D\x90\x44\x00\x00\x00'                    # 0x8A: lea edx,[eax+0x44]（缓存串=cave+0x904）
-    b += b'\x8D\x45\xE4'                                # 0x90: lea eax,[ebp-0x1c]
-    b += b'\xE8' + rel32(0x403C58, 0x94)                # 0x93: call LStrAsg（@0x94）
-    b += b'\x5E\x5F'                                    # 0x98: pop esi/edi
-    b += b'\xE9' + rel32(DC_DONE_VA, 0x9B)              # 0x9A: jmp 0x478848
+    def r8(name):
+        fixups.append(('r8', len(b), name))
+        return b'\x00'
+
+    def r32(name):
+        fixups.append(('r32', len(b), name))
+        return b'\x00\x00\x00\x00'
+
+    def j8(op, name):
+        b.append(op)
+        b.extend(r8(name))
+
+    def jcc32(op0, op1, name):
+        b.append(op0)
+        b.append(op1)
+        b.extend(r32(name))
+
+    def call_abs(target):
+        b.append(0xE8)
+        b.extend(struct.pack('<i', target - va(len(b) + 4)))
+
+    def jmp_abs(target):
+        b.append(0xE9)
+        b.extend(struct.pack('<i', target - va(len(b) + 4)))
+
+    disp = FLAG_OFF - (CAVE_B_OFF + 0x07)   # 基址计算：call$+5 在偏移2 → pop 得 stub+7
+    mark_off = MARK_OFF - FLAG_OFF          # 各标志相对 eax(=cave+FLAG_OFF) 的位移
+    eye_off = EYEBUSY_OFF - FLAG_OFF
+    cache_len_off = CACHE_OFF - FLAG_OFF
+    cache_data_off = CACHE_OFF + 4 - FLAG_OFF
+
+    # --- 0x00: 基址 + 扫请求找 "Status: choosing" ---
+    b += b'\x57\x56'                                    # push edi/esi
+    b += b'\xE8\x00\x00\x00\x00'                     # call $+5
+    b += b'\x58'                                         # pop eax
+    b += b'\x05' + struct.pack('<i', disp)               # add eax, disp（eax=cave+FLAG_OFF）
+    b += b'\x8B\x7D\x08'                               # mov edi,[ebp+8]（请求指针）
+    b += b'\x8B\x4D\x0C'                               # mov ecx,[ebp+0xC]
+    b += b'\x8B\x09'                                    # mov ecx,[ecx]（长度）
+    b += b'\x83\xF9\x10'                               # cmp ecx,16
+    j8(0x72, 'reqdone')                                   # jb .reqdone
+    b += b'\x8D\x74\x0F\xF0'                          # lea esi,[ecx+edi-16]
+    label('scan')
+    b += b'\x81\x3F\x53\x74\x61\x74'                # cmp [edi],'Stat'
+    j8(0x75, 'nxt')
+    b += b'\x81\x7F\x04\x75\x73\x3A\x20'           # cmp [edi+4],'us: '
+    j8(0x75, 'nxt')
+    b += b'\x81\x7F\x08\x63\x68\x6F\x6F'           # cmp [edi+8],'choo'
+    j8(0x75, 'nxt')
+    b += b'\x81\x7F\x0C\x73\x69\x6E\x67'           # cmp [edi+0xC],'sing'
+    jcc32(0x0F, 0x84, 'suppress')                         # je .suppress（距离远，rel32）
+    label('nxt')
+    b += b'\x47'                                         # inc edi
+    b += b'\x39\xF7'                                    # cmp edi,esi
+    j8(0x76, 'scan')                                      # jbe .scan
+    # --- 扫请求找 "passive"（eax 已是 cave+FLAG_OFF）---
+    label('reqdone')
+    b += b'\x8B\x7D\x08'                               # mov edi,[ebp+8]
+    b += b'\x8B\x4D\x0C'                               # mov ecx,[ebp+0xC]
+    b += b'\x8B\x09'                                    # mov ecx,[ecx]
+    b += b'\x83\xF9\x07'                               # cmp ecx,7
+    jcc32(0x0F, 0x82, 'flagchk')                          # jb .flagchk（距离远，rel32）
+    b += b'\x8D\x74\x0F\xF9'                          # lea esi,[ecx+edi-7]
+    b += b'\x8B\xD1'                                    # mov edx,ecx
+    b += b'\x83\xEA\x06'                               # sub edx,6
+    label('ps')
+    b += b'\x81\x3F\x70\x61\x73\x73'                # cmp [edi],'pass'
+    j8(0x75, 'pn')
+    b += b'\x66\x81\x7F\x04\x69\x76'                # cmp word [edi+4],'iv'
+    j8(0x75, 'pn')
+    b += b'\x80\x7F\x06\x65'                          # cmp byte [edi+6],'e'
+    j8(0x74, 'passive')
+    label('pn')
+    b += b'\x47'                                         # inc edi
+    b += b'\x4A'                                         # dec edx
+    j8(0x75, 'ps')
+    jcc32(0x0F, 0x84, 'flagchk')                          # 未找到 → .flagchk（距离远，rel32）
+
+    # --- passive：EYEBUSY → 吞；MARK → 原版；否则重放缓存 ---
+    label('passive')
+    b += b'\x80\xB8' + struct.pack('<i', eye_off) + b'\x00'   # cmp byte [eax+EYEBUSY],0
+    jcc32(0x0F, 0x85, 'suppress')                         # jne .suppress（视力答题中双击禁用）
+    b += b'\x83\xB8' + struct.pack('<i', mark_off) + b'\x00'  # cmp dword [eax+MARK],0
+    jcc32(0x0F, 0x85, 'normal')                           # jne .normal（视力未弹框 → 交还原版）
+    b += b'\x83\xB8' + struct.pack('<i', cache_len_off) + b'\x00'   # cmp dword [eax+cache_len],0
+    jcc32(0x0F, 0x84, 'suppress')                         # je .suppress（无缓存 → 吞）
+    b += b'\x8D\x90' + struct.pack('<i', cache_data_off)  # lea edx,[eax+cache_data]（缓存串）
+    b += b'\x8D\x45\xE4'                               # lea eax,[ebp-0x1c]
+    call_abs(0x403C58)                                    # call LStrAsg（响应 := 缓存菜单）
+    b += b'\x5E\x5F'                                    # pop esi/edi
+    jmp_abs(DC_DONE_VA)                                   # jmp 0x478848
     # --- 吞掉双击（204）---
-    b += b'\x5E\x5F'                                    # 0x9F: .suppress: pop esi/edi
-    b += b'\x8D\x45\xE4'                                # 0xA1: lea eax,[ebp-0x1c]
-    b += b'\xE8' + rel32(0x403BC0, 0xA5)                # 0xA4: call 0x403BC0（清响应）
-    b += b'\xE9' + rel32(DC_DONE_VA, 0xAA)              # 0xA9: jmp 0x478848
+    label('suppress')
+    b += b'\x5E\x5F'                                    # pop esi/edi
+    b += b'\x8D\x45\xE4'                               # lea eax,[ebp-0x1c]
+    call_abs(0x403BC0)                                    # call 0x403BC0（清响应）
+    jmp_abs(DC_DONE_VA)                                   # jmp 0x478848
     # --- 输入框标志检查（清响应 → 204）---
-    b += b'\x83\x38\x00'                                # 0xAE: .flagchk: cmp dword [eax],0
-    b += b'\x75\xEC'                                    # 0xB1: jne .suppress（0x9F）
+    label('flagchk')
+    b += b'\x83\x38\x00'                               # cmp dword [eax],0（FLAG）
+    jcc32(0x0F, 0x85, 'suppress')                         # jne .suppress
     # --- 非 passive 非输入框：清响应走原逻辑（主菜单）---
-    b += b'\x5E\x5F'                                    # 0xB3: .normal: pop esi/edi
-    b += b'\x8D\x45\xE4'                                # 0xB5: lea eax,[ebp-0x1c]
-    b += b'\xE8' + rel32(0x403BC0, 0xB9)                # 0xB8: call 0x403BC0（清响应）
-    b += b'\xE9' + rel32(DC_CONT_VA, 0xBE)              # 0xBD: jmp 0x4782C5
-    assert len(b) == 0xC2, hex(len(b))
+    label('normal')
+    b += b'\x5E\x5F'                                    # pop esi/edi
+    b += b'\x8D\x45\xE4'                               # lea eax,[ebp-0x1c]
+    call_abs(0x403BC0)                                    # call 0x403BC0（清响应）
+    jmp_abs(DC_CONT_VA)                                   # jmp 0x4782C5（原入口）
+    # --- 解算分支 ---
+    for kind, pos, name in fixups:
+        t = labels[name]
+        if kind == 'r8':
+            v = t - (pos + 1)
+            assert -128 <= v <= 127, (name, hex(t), hex(pos), v)
+            struct.pack_into('<b', b, pos, v)
+        else:
+            struct.pack_into('<i', b, pos, t - (pos + 4))
+    assert len(b) <= 0x100, hex(len(b))
     return bytes(b)
 
 
 def patch_extra_link(data: bytearray) -> bytearray:
-    """海原雄山 链接化 + OnAnchorSelect 打开 http 链接 + 双击判定。"""
+    """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
+    游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
     blob = bytearray(0x2000)
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
@@ -740,7 +844,7 @@ def patch_extra_link(data: bytearray) -> bytearray:
         b'\xE9' + struct.pack('<i', cave_va + CAVE2_OFF - URL_HOOK_NEXT_VA))
     data[URL_HOOK_OFF + 5:URL_HOOK_OFF + 8] = b'\x90' * 3
 
-    # 桩 A：搜索框标志维护（挂在事件响应汇总点）
+    # 桩 A：响应监控（输入框标志/游戏状态/退出收尾，挂在事件响应汇总点）
     stubA = _build_resp_monitor_stub(cave_va + CAVE_A_OFF)
     data[raw + CAVE_A_OFF:raw + CAVE_A_OFF + len(stubA)] = stubA
     off = RESP_DONE_VA - 0x400C00
@@ -776,7 +880,7 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 8] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_B_OFF - (DC_ENTRY_VA + 5))) + b'\x90' * 3
 
-    print(f'补丁已应用: 海原雄山 + OnAnchorSelect(http) + 双击判定(choosing/输入框/游戏菜单) @ RVA 0x{rva:X}')
+    print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定 @ RVA 0x{rva:X}')
     return data
 
 
