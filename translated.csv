@@ -626,7 +626,7 @@ Offset,Length,Type,Text
 0x6C2F8,3,code,式 
 0x6C304,15,code,双座型突击规格M
 0x6C31C,54,code,the end of genesis T.M.R evolution turbo type D 的构想
-0x6F3E4,92,code,\0\s0所谓AS技术，是多年前一家名为 CompJapan 的公司所开发的技术……\w8\w8\n\n
+0x6F3E4,92,code,\0\s0所谓的AS技术，是多年前一家名为 CompJapan 的公司所开发的技术……\w8\w8\n\n
 0x6F44C,146,code,\s7没想到！\w8\w8\s5在for循环中毫无意义地反复进行加减运算，竟然能优化内存，从而使机器运行得更快，这可真是一项了不起的技术！\w8\w8
 0x6F4E8,138,code,\1\s0……\w8\w8\w8不过，话说回来，\w8那根本就是诈骗吧。\w8\w8\0\s5\n\n乌纽别多嘴！\w8\w8\n\n详情请看这个网站。
 0x6F57C,63,code,"\![open,browser,https://ja.wikipedia.org/wiki/CompJapan]"
@@ -671,7 +671,7 @@ Offset,Length,Type,Text
 0x70954,79,code,\0\s7\1\s1\0别去参加没被邀请的二次会！\1\s1冷静点！
 0x709AC,53,code,\0\s7\1\s0\0精神感应高达太大了！\1\s1冷静点！
 0x709EC,86,code,\0\s7\1\s0\0没干劲的可以滚回去了！\w8\w8\1……\w8\w8你是头脑简单的体育老师吗。
-0x70A4C,103,code,\0\s0\1\s0\0用真名或真名改编的网名比较好哦。\w8\w8\1\s0……\w8\w8什么啊。
+0x70A4C,103,code,\0\s0\1\s0\0用真名或真名改编的网名比较好哦。\w8\w8\1\s0……\w8\w8搞什么啊。
 0x70ABC,61,code,\0\s7\1\s0\0别再讲那些没头没尾的废话了！\1\s1冷静点！
 0x70B04,51,code,\0\s7\1\s0\0制作人员名单太长了！\1\s1冷静点！
 0x70B40,65,code,\0\s7\1\s0\0我觉得一定要有色色的内容才行。\1\s1冷静点！
@@ -820,12 +820,20 @@ Offset,Length,Type,Text
 0x7B4A8,54,code,"\0\s0那么，\s5开始吧。\w8\w8\![raise,OnQuizNext]"
 0x7B4FC,7,code,\0\s0第
 0x7B50C,14,code,题。\w8\w8\n\n
+0x7B524,24,answer,兰氏环
 0x7B548,63,code,\0\s0视力检查时常使用这种图。\w8\w8\n\n它的正式名称是？
+0x7B590,64,answer,田代家的小公主们
 0x7B5DC,214,code,\0\s0FC红白机最火的时候，曾推出过不少和艺人联动的游戏。\w8\w8\n\n如今已经以怪咖人设站稳脚跟的田代政，当时也出过一款FC游戏。\w8\w8\n\n\s5这款游戏的标题是什么？
-0x7B6E8,58,code,\0\s0黑暗要塞：遗迹的 BGM 乐队叫什么名字？
+0x7B6BC,32,answer,Crystal King
+0x7B6E8,58,code,\0\s0暗黑要塞的 BGM 乐队叫什么名字？
+0x7B72C,44,answer,电脑战士多边兽
 0x7B764,202,code,\0\s0\0\s0就因为部分不懂事的小孩稍微晕倒，以后同样的特效就不能用了，每次看电视时都会出现请保持距离观看之类的烦人字幕，久米宏还会莫名其妙地情绪激动，
-0x7B838,101,code,宝可梦第38话给动画界带来了难以言喻地负面影响。\w8\w8\n\n\s5它的副标题是什么？
+0x7B838,101,code,宝可梦第38集给动画界带来了难以言喻地负面影响。\w8\w8\n\n\s5这一集的副标题是什么？
+0x7B8A8,10,answer,120分
 0x7B8BC,56,code,\0\s5Beta录像带L-500的βII模式录制时间是多少分钟？
+0x7B900,68,answer,ナルエリンコゲートポイントパーサー
+0x7B950,68,answer,ヌルエリンコゲートポイントパーサー
+0x7B9A0,60,answer,Null Erinco Gate Point Pursuer
 0x7B9E8,114,code,\0\s0让高机动幻想秒变垃圾游戏的菜鸟救星武器\w4 N.E.P。\w8\w8\n\n这把武器的正式名称是？\w8\w8\n\n
 0x7BA64,112,code,\s5啊，顺便说下，请用英文回答，不加连字符、中点等多余符号。\w8\w8\1\s0片假名也行，姑且算吧。
 0x7BB70,44,code,\b[2]\0\s[20]菜单……\w8\w8\s0好。\n\n
@@ -984,9 +992,9 @@ Offset,Length,Type,Text
 0x7E2F4,109,code,"\0\s[20]获取IP地址中……\w8\w8\n\n\![execute,http-get,""http://usada.sakura.vg/ip.php""]\![raise,On_IP_got]"
 0x7E394,25,code,\0\s0获取完成。\w8\w8\n\n
 0x7E3C8,16,code,哦。\w8\w8\n\n
-0x7E3E4,32,code,复制到剪贴板？\n\n
-0x7E410,36,code,"\![*]\q[是,executecopyipaddress]\n"
-0x7E440,24,code,"\![*]\q[否,cancel]\n"
+0x7E3E4,32,code,要复制到剪贴板吗？\n\n
+0x7E410,36,code,"\![*]\q[好的,executecopyipaddress]\n"
+0x7E440,24,code,"\![*]\q[不用了,cancel]\n"
 0x7E464,42,code,\0\s4……\w8\w8获取失败。\w8\w8\1\s1唔。
 0x7E4C8,29,code,\0……\w8\w8\s1小心哦。
 0x7E4F0,29,code,\0……\w8\w8\s4小心哦。
@@ -1016,10 +1024,10 @@ Offset,Length,Type,Text
 0x7EC84,63,code,\0\s[20]复制IP地址……\w8\w8好。\w8\w8\n\n\s5搞定了。
 0x7ECE4,21,code,\0\s0待办列表。
 0x7ED04,101,code,"\s[20]清除图标缓存……\w8\w8好。\w8\w8\n\n\![raise,Execute,updateexplorer]\s5搞定了。"
-0x7ED74,49,code,\0\s[20]当前OS的连续运行时间是……\w8\w8\n\n\s0
+0x7ED74,49,code,\0\s[20]当前 OS 的连续运行时间是……\w8\w8\n\n\s0
 0x7EDB0,4,code,小时
 0x7EDC0,2,code,秒
-0x7EDCC,6,code,哦。
+0x7EDCC,6,code,。
 0x7EDEC,68,code,\0\s5知道古朗基语可真内行啊。\w8\w8\1\s1嘿嘿嘿。
 0x7EE4C,60,code,\0\s5知道重力语可真宅啊。\w8\w8\1\s1……
 0x7EEA8,24,code,\0\s8……\w8\w8\1\s0……
@@ -1277,7 +1285,7 @@ Offset,Length,Type,Text
 0x84A10,59,code,\0\s0\1\s0\0中—午—。\w8\1……\w8\w8\0\n\n中—午—了—。\e
 0x84A54,38,code,\0\s0\1\s0\0啊。\w8\w8\n\n最近还好吗，
 0x84A84,20,code,。\w8\w8\1……\w8\w8
-0x84AA4,12,code,\0\n\n今日，
+0x84AA4,12,code,\0\n\n今天，
 0x84ABC,29,code,日的日程。\w8\n\n
 0x84AE4,30,code,清晨：\w4多睡一分钟也好\w8\n
 0x84B0C,32,code,早上：\w4今天又是通勤高峰\w8\n
@@ -1362,20 +1370,20 @@ Offset,Length,Type,Text
 0x85DFC,96,code,对 MATERIA 来说，能住进许多桌面里，是一件非常重要的事。\w8\w8\n\n
 0x85E68,222,code,\s5也介绍给朋友吧，\n让朋友也变漂亮吧！\w8\w8\1\s0又来，太老套了。\w8\w8\w8\w8\0\s8\n\n话说回来，\w8不推广的话，\w8会着火的哦。\w8\w8\1\s0\n\n……\w8\w8什么啊。什么东西会着火啊……\w8\w8\w8\w8\w8\w8\0\c\1\c\b[-1]
 0x85F50,131,code,\1\b[-1]\0\s[20]……\w8\w8话虽如此。\w8\w8\n\n\s5我一直在这儿，有事的话，随时点击叫我哦。
-0x8601C,4,code,阳子
+0x8601C,4,code,陽子
 0x8602C,32,code,\0\s0\1\s0\_s鹰爪结束。\_s
 0x86058,67,code,\0\s0\1\s0\0……\w8\w8\w8\w8那家伙，绝对不是狗。\1\s1……！
-0x860A4,6,code,阿鲁托
+0x860A4,6,code,あると
 0x860B4,74,code,\0\s0\1\s0\_s咖喱结束。\_s\w8\w8\1\n\n……\w8\w8不，这样真的没问题吗。
-0x86108,8,code,小花
+0x86108,8,code,花ちゃん
 0x8611C,74,code,\0\s0\1\s0\_s乌冬面结束。\_s\w8\w8\1\n\n……\w8\w8不，这样真的没问题吗。
 0x86170,4,code,毒子
 0x86180,104,code,\0\s0\1\s0\_s低性能机器杀手结束。\_s\w8\w8\1\n\n……\w8\w8King of 资源吞噬者呢。
 0x861F4,81,code,\0\s[20]\1\s0\0……\w8\w8胖了吗？\w8\w8\w8\w8\1\s0……\w8\w8\w8\w8\0\s0\n\n……
 0x86250,20,code,\0\s0\1\s0\0唔……
-0x86270,14,code,桑巴雨
+0x86270,14,code,サンバーレイン
 0x86288,136,code,\0\s[20]\1\s0\0那个人也变了呢……\w8\w8\1\s0嗯。\w8\w8\n\n以前还会发射光束什么的。\w8\w8\w8\0\s0\n\n……\w8\w8是吗。
-0x8631C,6,code,希尔德
+0x8631C,6,code,ヒルデ
 0x8632C,43,code,\0\s7\1\s0\0又是赤字！\1\s1冷静点！
 0x86360,61,code,\0\s7\1\s0\0你真是非常规啊！\1\s1冷静点！
 0x863A8,55,code,\0\s7\1\s0\0别老用卡拉萨瓦！\1\s1冷静点！
@@ -1919,7 +1927,7 @@ Offset,Length,Type,Text
 0x94068,4,code,，
 0x94078,55,code,是主食。\w8\w8\1\s0……\w8\w8那当然会死啊。
 0x940B8,47,code,\0\s7「Fa」\w4这名字好怪！\1\s1冷静点！
-0x940F0,153,code,"\0\s0\_l[10,90]\_q看电视的时候，请保持房间明亮\_l[10,104]不要离太近哦。\_q\w8\w8\1\s0……\w8\w8\w8\w8那"
+0x940F0,153,code,"\0\s0\_l[10,90]\_q看电视的时候，请保持房间明亮\_l[10,104]不要离太近哦。\_q\w8\w8\1\s0……\w8\w8\w8\w8搞什么啊。"
 0x94194,34,code,\1\s1一个人也能行。\0\s4……
 0x941C0,12,code,终究是
 0x941D8,55,code,的劣化复制品呢。\w8\w8\1\s0……\w8\w8别这么说啊。
@@ -2472,7 +2480,7 @@ Offset,Length,Type,Text
 0xA1B50,136,code,\0\s[20]第二场将于 20:00 开演。\w8\w8\n\n此外，届时将利用这段时间销售\w4签名CD、\w4签名海报等\w4
 0xA1BE4,42,code,酱的周边。\w8\w8\n\n
 0xA1C18,86,code,这些商品均为演唱会现场限定发售，请务必趁此机会购买。\w8\w8
-0xA1C78,25,code,\1\s0……\w8\w8什么啊。
+0xA1C78,25,code,\1\s0……\w8\w8搞什么啊。
 0xA1C9C,86,code,\1\s0笑吧赖朝。\w8\w8\0\s0……\w8\w8\w8\w8\1\s1\n\n笑吧赖朝……！\0\s4\n\n……
 0xA1CFC,133,code,\0\s[20]在小袋鼠肉排的薯泥配菜里能看见幽灵。\w8\w8\1\s0……\w8\w8\w8\w8\0\s7\n\n小心！\1\s1\n\n冷静点！
 0xA1D8C,132,code,\0\s[20]乌纽知道\w2「特攻野郎A队」\w2吗？\w8\w8\1\s0……\w8\w8\w8\w8胡子什么的，果然呢。\w8\w8\0\s0\n\n大概吧。
@@ -2722,7 +2730,7 @@ Offset,Length,Type,Text
 0xA87BC,32,code,为什么要说这种话啊……
 0xA87E8,12,code,嘎，嘎哦……
 0xA8800,42,code,一把年纪了还看动漫，死胖子！
-0xA8834,21,code,那，再来一次吧☆
+0xA8834,21,code,那么，再来一次吧☆
 0xA8854,46,code,你还记得至今吃过多少片面包吗？
 0xA888C,8,code,唔咕～
 0xA88A0,10,code,啊呜～！
@@ -2862,7 +2870,7 @@ Offset,Length,Type,Text
 0xD59E3,15,rsrc,宋体
 0xD5BFF,10,rsrc,教程(&T)
 0xD5CF8,15,rsrc,宋体
-0xD6877,15,rsrc,宋体
+0xD6877,15,rsrc,黑体
 0xD6A39,15,rsrc,宋体
 0xD6B5B,6,rsrc,语言
 0xD6BB0,8,rsrc,多

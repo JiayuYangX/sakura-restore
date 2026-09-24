@@ -2,6 +2,7 @@
 """从 first.dll 提取 Shift_JIS 字符串到 CSV。
 标记条目（FF FF FF FF 头）→ CODE 段。
 DFM 条目（TPF0 资源字符串）→ .rsrc 段。
+问答答案常量（反转的 hex-SJIS）→ answer 段。
 """
 import struct, csv, os
 
@@ -14,6 +15,26 @@ MANUAL_OFFSETS = [
     0x7E020,  # URL：搜索第 1 处：Google -> Bing
     0x7E05C,  # URL：搜索第 2 处
 ]
+
+def decode_answer(raw):
+    """问答游戏的答案常量：payload 为大写十六进制 ASCII，
+    整串反转后 hex→字节 即为 SJIS 答案文本（见 patch_dll.py 的 answer 回写）。
+    不符合该格式则返回 None。"""
+    if len(raw) < 8 or len(raw) % 2:
+        return None
+    try:
+        s = raw.decode('ascii')
+    except UnicodeDecodeError:
+        return None
+    if any(c not in '0123456789ABCDEF' for c in s):
+        return None
+    try:
+        text = bytes.fromhex(s[::-1]).decode('shift_jis')
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not text or any(ord(c) < 0x20 for c in text):
+        return None
+    return text
 
 def extract_marker_strings(data, code_start, code_end, force_offsets=None):
     """提取以 FF FF FF FF 为前缀的标准字符串。
@@ -33,6 +54,9 @@ def extract_marker_strings(data, code_start, code_end, force_offsets=None):
                     for j in range(len(raw) - 1)
                 )
                 if not has_jp and data_off not in force:
+                    ans = decode_answer(raw)
+                    if ans is not None:
+                        rows.append((data_off, length, 'answer', ans))
                     off += 4; continue
                 text = raw.decode('shift_jis', errors='replace').rstrip('\x00')
                 if text:
@@ -137,6 +161,7 @@ with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
     for off, length, typ, text in all_rows:
         w.writerow([f'0x{off:X}', length, typ, text])
 
-marker_count = len(all_rows) - len(dfm_rows) - len(font_rows)
+answer_count = sum(1 for r in all_rows if r[2] == 'answer')
+marker_count = len(all_rows) - len(dfm_rows) - len(font_rows) - answer_count
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
-print(f'  标记: {marker_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')
+print(f'  标记: {marker_count}  答案: {answer_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')

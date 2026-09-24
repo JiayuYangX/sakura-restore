@@ -4,8 +4,10 @@
 输出到 output/first.dll（可选：命令行第一个参数 = 额外复制到的部署路径）。
 
 文本翻译（CSV）：
-  Offset = 写入位置，Length = 最大字节数，Type = code|rsrc|font。
+  Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font。
   - code：off-4 处为 4 字节小端长度，写入后更新长度并清零剩余
+  - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
+    （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
   - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
   - font：无长度前缀，用 \\x00 补齐
 
@@ -1080,6 +1082,19 @@ for row in rows:
     except UnicodeEncodeError:
         print(f'跳过: off=0x{off:X} len={length} {enc} text={repr(text)}')
         skip += 1; continue
+
+    if typ == 'answer':
+        # 存储格式：答案文本字节 -> 大写 hex -> 整串反转
+        stored = raw.hex().upper()[::-1].encode('ascii')
+        if len(stored) > length:
+            print(f'答案超长: off=0x{off:X} 原={length} 新={len(stored)} {enc} text={repr(text)}')
+            skip += 1; continue
+        data[off : off + len(stored)] = stored
+        data[off - 4 : off] = struct.pack('<I', len(stored))
+        if length > len(stored):
+            data[off + len(stored) : off + length] = b'\x00' * (length - len(stored))
+        ok += 1
+        continue
 
     if len(raw) > length:
         data[off : off + length] = raw[:length]
