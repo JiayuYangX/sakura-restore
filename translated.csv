@@ -523,6 +523,11 @@ Offset,Length,Type,Text
 0x65480,12,code,面骰子
 0x65498,24,code,颗……\w8\w8好。\w8\w8
 0x65690,179,code,\0\s0也就是所谓的骰子……\w8\w8吧。\w8\w8\1\s0是骰子呢。\w8\w8\0\n\n基本上就是在编辑框里输入骰子表达式，然后按 Enter 即可。\w8\w8\n\n比如 2d6+10 之类的，还可以进行加减运算哦。
+0x66A08,5,code,宋体
+0x66AE4,5,code,宋体
+0x67C70,5,pchar,宋体
+0x67F60,5,code,宋体
+0x67F88,5,pchar,宋体
 0x688E0,38,code,"\![leave,passivemode]\0\s0设置完成。"
 0x68A1C,257,code,"\0\s0只有一个注意事项。\w8\w8\n\nWin9x 缺少在桌面上进行透明绘制的功能，因此没法像\w8\_b[correctimage.png,20,65]\w8\n\n\n\n\n\n\n这样显示得这么漂亮。\w8\w8\n\n这也是没办法的事，请放弃吧。\w8\w8\1\s0就当能看见已经很不错了。"
 0x6A98C,22,code,传授网游礼仪
@@ -626,6 +631,7 @@ Offset,Length,Type,Text
 0x6C2F8,3,code,式 
 0x6C304,15,code,双座型突击规格M
 0x6C31C,54,code,the end of genesis T.M.R evolution turbo type D 的构想
+0x6E86C,5,pchar,宋体
 0x6F3E4,92,code,\0\s0所谓的AS技术，是多年前一家名为 CompJapan 的公司所开发的技术……\w8\w8\n\n
 0x6F44C,146,code,\s7没想到！\w8\w8\s5在for循环中毫无意义地反复进行加减运算，竟然能优化内存，从而使机器运行得更快，这可真是一项了不起的技术！\w8\w8
 0x6F4E8,138,code,\1\s0……\w8\w8\w8不过，话说回来，\w8那根本就是诈骗吧。\w8\w8\0\s5\n\n乌纽别多嘴！\w8\w8\n\n详情请看这个网站。
@@ -2886,9 +2892,9 @@ Offset,Length,Type,Text
 0xD6FE1,15,rsrc,MATERIA CPU负载
 0xD706D,28,rsrc,MATERIA 提交内存大小
 0xD7108,20,rsrc,提交内存大小
-0xD7190,16,rsrc,电池余量(&B)
+0xD7190,16,rsrc,电池剩余电量(&B)
 0xD71E9,6,rsrc,其他
-0xD7242,18,rsrc,标题修改
+0xD7242,18,rsrc,标题栏文字修改
 0xD731B,10,rsrc,提示(&T)
 0xD7423,15,rsrc,宋体
 0xD76EC,15,rsrc,宋体

@@ -1,54 +1,62 @@
 #!/usr/bin/env python3
 """
-一次完成 first.dll 的三类补丁：文本翻译（CSV）+ 兼容补丁 + AITXT 词库。
-输出到 output/first.dll（可选：命令行第一个参数 = 额外复制到的部署路径）。
+一次完成 first.dll + misaki.dll 的全部补丁，输出到 output/。
+可选：命令行第一个参数 = 部署目标（ghost master 目录，或该目录下任一 dll 路径），
+两个 dll 会一起复制过去。
 
-文本翻译（CSV）：
-  Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font。
-  - code：off-4 处为 4 字节小端长度，写入后更新长度并清零剩余
-  - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
-    （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
-  - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
-  - font：无长度前缀，用 \\x00 补齐
+first.dll：
 
-兼容补丁（写入前逐字节校验原值）：
-  1. NOTIFY -> 按 GET 分发（把 0x719E9 处的 jne 填成 NOP）
-     first.dll 只实现了 GET；SSP 2.5.33+ 在 cantalk=0 时会把后台事件
-     以 NOTIFY 发来，之前会收到 400 并卡死状态机。
-  2. r"\\![enter,inductionmode]" 字符串长度 23 -> 0（0x79E08）
-     诱导模式会让 cantalk 永远保持 false，导致后台事件走 NOTIFY
-     （响应被忽略）、泡澡结束的对话不可见。
+  文本翻译（CSV）：
+    Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font。
+    - code：off-4 处为 4 字节小端长度，写入后更新长度并清零剩余
+    - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
+      （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
+    - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
+    - font：无长度前缀，用 \\x00 补齐
+    - pchar：无长度前缀的 PChar 字面量（前面不是字符串头，禁写 off-4），
+      只写内容+NUL，容量 = 原长+3
 
-AITXT（词库）：
-  aitxt_translated.txt（UTF-8）-> GBK -> 加密数据块，覆盖 PE 资源目录
-  中定位到的 AITXT 资源，并更新资源数据项的 Size 字段。
-  写入前做 round-trip 校验。
+  兼容补丁（写入前逐字节校验原值）：
+    1. NOTIFY -> 按 GET 分发（把 0x719E9 处的 jne 填成 NOP）
+       first.dll 只实现了 GET；SSP 2.5.33+ 在 cantalk=0 时会把后台事件
+       以 NOTIFY 发来，之前会收到 400 并卡死状态机。
+    2. r"\\![enter,inductionmode]" 字符串长度 23 -> 0（0x79E08）
+       诱导模式会让 cantalk 永远保持 false，导致后台事件走 NOTIFY
+       （响应被忽略）、泡澡结束的对话不可见。
+    3. Tcpuloadform 布局两处写死高度 128 -> 64（0x46891A / 0x468AC0）：
+       信息窗只保留文字区，整窗命中即文字区命中（配合 misaki 的整层 alpha 填充）。
 
-链接化补丁（海原雄山）：
-  「自动加链接」名单由 7 段固定序列注册（push ebp / mov eax,<常量> / call
-  0x4AA838 / pop ecx），名单区后紧接代码，没有空位。这里把最后一段（木野さん）
-  的 call 重定向到新增的可执行节 .cave 中的小桩：桩内先补完原调用，再对
-  「海原雄山」常量（命中处理表里已有，翻译表会把它改写成 GBK）调用一次注册。
-  桩为位置无关代码（不依赖镜像基址）。
+  AITXT（词库）：aitxt_translated.txt（UTF-8）-> GBK -> 加密数据块，覆盖 PE 资源
+    目录中定位到的 AITXT 资源，并更新资源数据项的 Size 字段。写入前 round-trip 校验。
 
-RSS 链接补丁（OnAnchorSelect 打开浏览器）：
-  SSP 把头条展开成 \\_a[URL]title\\_a 锚点，点击后发 OnAnchorSelect，Ref0=URL；
-  first.dll 对该 ID 匹配名字失败后落到兜底「……ん？」，SSP 便不再打开链接。
-  这里把兜底分支入口重定向到 .cave 中的第二个桩：若 Ref0 以 "http" 开头，
-  在节内缓冲里拼出 "\\![open,browser,<URL>]" 作为响应脚本返回；否则走原兜底。
+  链接化补丁（海原雄山）：「自动加链接」名单由 7 段固定序列注册，最后一段（木野さん）
+    的 call 重定向到 .cave 小桩：先补完原调用，再对「海原雄山」常量调用一次注册。
 
-游戏 / 双击相关补丁（.cave 内若干桩，详见各构建函数文档串）：
-  - 桩A（响应监控，挂 0x47A399）：输入框标志、视力游戏状态（MARK/EYEBUSY）、
-    游戏退出收尾（PENDING+GAMELEFT）、游戏菜单缓存、视力取消输入框按“空提交”
-    处理（响应 \\![raise,OnEyesightgameInput,]）。
-  - 桩B（双击判定，挂 0x4782BD）：菜单/输入框/视力答题中双击吞掉；打字/问答
-    双击重放该游戏菜单；视力已进入但未弹框时置 PENDING（桩A 前置含
-    leave,passivemode 的收尾命令）+ 调关窗小段，再走原版出主菜单。
-  - 关窗体辅助桩（由桩A 的 .setpend / 关窗小段调用）：FindWindowA + WM_CLOSE
-    关 Ttypinggameform / Teyesightform / Tcountdownform；CloseQuery 跳板保证
-    GAMELEFT 期间打字框可关。
+  RSS 链接补丁（OnAnchorSelect 打开浏览器）：兜底分支入口重定向到 .cave 第二桩：
+    Ref0 以 "http" 开头则在节内缓冲拼出 "\\![open,browser,<URL>]" 返回。
+
+  游戏 / 双击相关补丁（.cave 内若干桩，详见各构建函数文档串）：
+    - 桩A（响应监控，挂 0x47A399）：输入框标志、视力游戏状态（MARK/EYEBUSY）、
+      游戏退出收尾（PENDING+GAMELEFT）、游戏菜单缓存、视力取消输入框按“空提交”。
+    - 桩B（双击判定，挂 0x4782BD）：菜单/输入框/视力答题中双击吞掉；打字/问答
+      双击重放该游戏菜单；视力已进入但未弹框时置 PENDING + 调关窗小段。
+    - 关窗体辅助桩：FindWindowA + WM_CLOSE 关 Ttypinggameform / Teyesightform /
+      Tcountdownform；CloseQuery 跳板保证 GAMELEFT 期间打字框可关。
+
+  高分屏缩放与拖动：
+    - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
+      窗口交给系统按屏幕缩放（含 GDI 自绘文字）；请求之外 SSP 自身界面不受影响。
+    - 拖动修复：6 处 FormMouseMove 里 SC_DRAGMOVE 的 SendMessageA 调用改为经过
+      .cave 包装桩（拖动模态循环期间线程 GDISCALED），另有 6 处锚点坐标换算
+      （物理像素 → 96dpi 虚拟坐标）。
+
+misaki.dll（透明窗命中区）：
+  透明窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按图层
+  alpha 做命中判定（alpha==0 穿透）；DPI 虚拟化下只有字形能命中、拖不动。
+  把 allclear 清零填充值改成 0x01（alpha=1/255，肉眼不可见但可命中），配合
+  first.dll 的信息窗高度减半 → 信息窗整窗（=文字区）可拖、时钟整窗可拖。
 """
-import csv, hashlib, os, sys, struct, shutil, unicodedata
+import csv, hashlib, os, sys, struct, shutil, unicodedata, zlib
 
 # 需要按 Shift-JIS 写入的偏移（其余一律 GBK）。
 # 空白：原先 12 条窗口 label 文案必须 SJIS（所在窗体 Font.Charset=SHIFTJIS_CHARSET，
@@ -63,6 +71,12 @@ PATCHES = [
     (0x719E9, bytes.fromhex('0F 85 AF 7E 00 00'), b'\x90' * 6),
     # 2. r"\![enter,inductionmode]" 字符串长度 23 -> 0
     (0x79E08, bytes.fromhex('17 00 00 00'), bytes.fromhex('00 00 00 00')),
+    # 3. Tcpuloadform 布局里写死的高度 128 -> 64（两处：VA 0x46891A / 0x468AC0，
+    #    文件偏移 0x67D1A / 0x67EC0：mov edx,0x80; call SetClientHeight）
+    #    信息窗只保留文字区：整窗=文字区 → 命中/拖动/穿透自然正确，配合 misaki
+    #    整层 alpha 填充也不会再有黑线。
+    (0x67D1A, bytes.fromhex('80 00 00 00'), bytes.fromhex('40 00 00 00')),
+    (0x67EC0, bytes.fromhex('80 00 00 00'), bytes.fromhex('40 00 00 00')),
 ]
 
 
@@ -122,38 +136,6 @@ def patch_dfm_charset(data: bytearray) -> bytearray:
         pos = vs + len(DFM_CHARSET_NEW)
     if n != 2:
         raise RuntimeError(f'DFM Font.Charset 修补数量异常: {n}（期望 2）')
-    return data
-
-
-DFM_SCALED_OLD = b'\x06Scaled\x08'      # 属性名(6)+vaFalse
-DFM_SCALED_NEW = b'\x06Scaled\x09'      # vaTrue
-
-# 注意：此补丁与「高分屏缩放（导出包装，DPI_WRAP_ENABLE）」**互斥**——
-# Scaled=True 会让 VCL 按屏幕 DPI 放大一次，而导出包装会让系统再缩放一次（双重放大）。
-# 包装方案覆盖面更全（含自绘文字），故默认关闭本补丁。
-DFM_SCALED_ENABLE = False
-
-
-def patch_dfm_scaled(data: bytearray) -> bytearray:
-    """把各窗体 DFM 里的 `Scaled = False` 改成 `True`（纯数据，不动任何 API）。
-
-    VCL 载入窗体时若 `Scaled=True` 且 `Screen.PixelsPerInch ≠ 窗体 PixelsPerInch(96)`，
-    会按屏幕 DPI 自动缩放控件的位置/尺寸/字体——高分屏下各窗体的界面元素变大；
-    模拟时钟等「按窗体尺寸比例自绘」的会跟着放大。
-    覆盖不到：按硬编码像素绘制的部分（如视力 C 图字号 192、悬停提示窗）。"""
-    pos = 0
-    n = 0
-    while True:
-        p = data.find(DFM_SCALED_OLD, pos)
-        if p < 0:
-            break
-        pos = p + len(DFM_SCALED_OLD)
-        if data.rfind(b'TPF0', 0, p) < 0:       # 只动 TPF0 窗体数据块里的
-            continue
-        data[p + 7] = DFM_SCALED_NEW[7]         # vaFalse -> vaTrue
-        n += 1
-    if n < 10:
-        raise RuntimeError(f'DFM Scaled 修补数量异常: {n}（期望 10+）')
     return data
 
 
@@ -252,6 +234,8 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 #          数据可达 0x1F7B，故 0x1F7C 之后才空)
 #   高分屏包装桩：request@0x170（空闲段 0x167-0x1F7）| load@0x1F7C（尾段）| 数据@0xB0
 #   （PSET/字符串，占用 0xA7-0xFF 空闲段）
+#   拖动包装桩 @0x2000（需 cave ≥ 0x2200；调用点 6 处 SC_DRAGMOVE）
+# .cave 节大小 0x2200（原 0x2000，+0x200 放拖动包装桩）。
 
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
@@ -943,7 +927,7 @@ def _build_dc_status_stub(rva):
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
     游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(0x2000)
+    blob = bytearray(0x2400)
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1033,8 +1017,6 @@ DPI_WRAP_USER32 = 0x04
 DPI_WRAP_SETNAME = 0x10
 DPI_WRAP_IB = 0x400000        # 映像首选基址
 DPI_WRAP_ENABLE = True        # 总开关：出问题改 False 重建即可回到普通构建
-
-
 def _build_dpi_wrap_stub(stub_va, data_va, target_va):
     """位置无关的导出包装桩（stub/data/target 均为首选基址下的 VA）。"""
     pset_va = data_va + DPI_WRAP_PSET
@@ -1113,6 +1095,263 @@ def _build_dpi_wrap_stub(stub_va, data_va, target_va):
     return bytes(buf)
 
 
+# 拖动修复：信息窗用 SendMessage(WM_SYSCOMMAND, SC_DRAGMOVE) 拖动（6 个调用点）。
+# 窗口被系统虚拟化后，拖动模态循环与线程感知不一致会失效；这里把 6 个
+# SendMessageA 调用改指向包装桩：整个调用（含模态拖动循环）期间线程置 GDISCALED，
+# 结束后还原。调用点参数为 (hwnd, msg, wparam, lparam) 4 个 dword，桩以 ret 16 返回。
+DPI_DRAG_STUB_OFF = 0x2000    # 拖动包装桩（cave 扩到 0x2200 后的新增空间）
+DPI_DRAG_SLOT_SM = 0x4B35A8   # SendMessageA 的 IAT 槽（VA）
+DPI_DRAG_CALL_ORIG = 0x406F2C  # 原调用目标（SendMessageA 跳板）
+DPI_DRAG_CALLS = (0x46326D, 0x46755E, 0x468C56, 0x46D615, 0x46EC75, 0x4704DE)
+DPI_GETDPI_STR = 0x34         # 数据区：+0x34 "GetDpiForWindow"
+DPI_GETDPI_SLOT = 0x30        # 数据区：+0x30 GDWF 指针
+DPI_GH_VA = 0x4380A4          # VCL GetHandle 辅助（eax=Self → eax=HWND）
+
+# 拖动锚点换算（现行做法）：拖动方法里固定的一段
+#   66 8B 55 08         mov dx, word [ebp+8]      ; X（客户区）
+#   66 8B 45 0C         mov ax, word [ebp+0xC]    ; Y
+#   E8 .. .. .. ..      call MAKELPARAM(0x407054)
+# 共 13 字节，替换为 call <cave 助手> + 8×NOP。助手按 96/GetDpiForWindow 把 (X,Y)
+# 换算成虚拟坐标并返回打包好的 lParam（物理像素→虚拟，修复判定/锚点空间不一致）。
+DPI_ANCHOR_ENABLE = True
+DPI_ANCHOR_HELPER_OFF = 0x2090
+DPI_ANCHOR_PATTERN = bytes.fromhex('66 8B 55 08 66 8B 45 0C E8')
+DPI_ANCHOR_MAKELPARAM = 0x407054
+def _build_drag_wrap_stub(stub_va, data_va):
+    pset_va = data_va + DPI_WRAP_PSET
+    str1_va = data_va + DPI_WRAP_USER32
+    str2_va = data_va + DPI_WRAP_SETNAME
+    gmh_va = DPI_WRAP_IAT_GMH
+    gpa_va = DPI_WRAP_IAT_GPA
+    sm_va = DPI_DRAG_SLOT_SM
+    buf = bytearray()
+    disp = []
+    rel = []
+    marks = {}
+
+    def d32(va):
+        disp.append((len(buf), va))
+        buf.extend(b'\x00' * 4)
+
+    def r8(mk):
+        rel.append((len(buf), mk))
+        buf.append(0)
+
+    def mark(mk):
+        marks[mk] = len(buf)
+
+    buf += b'\x53\x56'
+    buf += b'\xE8\x00\x00\x00\x00'
+    base = stub_va + len(buf)
+    buf += b'\x5B'
+    buf += b'\x8B\x83'; d32(pset_va)
+    buf += b'\x85\xC0'
+    buf += b'\x75'; r8('ctx')
+    buf += b'\x8D\x83'; d32(str1_va)
+    buf += b'\x50'
+    buf += b'\xFF\x93'; d32(gmh_va)
+    buf += b'\x8B\xF0'
+    buf += b'\x85\xF6'
+    buf += b'\x74'; r8('noctx')
+    buf += b'\x8D\x83'; d32(str2_va)
+    buf += b'\x50'
+    buf += b'\x56'
+    buf += b'\xFF\x93'; d32(gpa_va)
+    buf += b'\x85\xC0'
+    buf += b'\x74'; r8('noctx')
+    buf += b'\x89\x83'; d32(pset_va)
+    mark('ctx')
+    buf += b'\x8B\x83'; d32(pset_va)
+    buf += b'\x6A\xFB'
+    buf += b'\xFF\xD0'
+    buf += b'\x50'                        # old
+    buf += b'\xFF\x74\x24\x1C'            # pt
+    buf += b'\xFF\x74\x24\x1C'            # wparam
+    buf += b'\xFF\x74\x24\x1C'            # msg
+    buf += b'\xFF\x74\x24\x1C'            # hwnd
+    buf += b'\xFF\x93'; d32(sm_va)        # SendMessageA（自动 ret 16）
+    buf += b'\x50'
+    buf += b'\x52'
+    buf += b'\x8B\x4C\x24\x08'
+    buf += b'\x51'
+    buf += b'\xFF\x93'; d32(pset_va)
+    buf += b'\x5A\x58'
+    buf += b'\x59'
+    buf += b'\x5E\x5B'
+    buf += b'\xC2\x10\x00'                # ret 16
+    mark('noctx')
+    buf += b'\xFF\x74\x24\x18'
+    buf += b'\xFF\x74\x24\x18'
+    buf += b'\xFF\x74\x24\x18'
+    buf += b'\xFF\x74\x24\x18'
+    buf += b'\xFF\x93'; d32(sm_va)
+    buf += b'\x5E\x5B'
+    buf += b'\xC2\x10\x00'
+
+    for pos, va in disp:
+        struct.pack_into('<i', buf, pos, va - base)
+    for pos, mk in rel:
+        buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
+    return bytes(buf)
+
+
+def _build_anchor_helper(stub_va, data_va):
+    """锚点换算助手：入口 ebp = 拖动方法帧（[ebp+8]=X 字、[ebp+0xC]=Y 字），
+    ebx = Self。返回 eax = lParam（虚拟客户区坐标打包）。换算失败时按原样返回。"""
+    gdwf_va = data_va + DPI_GETDPI_SLOT
+    str1_va = data_va + DPI_WRAP_USER32
+    str2_va = data_va + DPI_GETDPI_STR
+    gmh_va = DPI_WRAP_IAT_GMH
+    gpa_va = DPI_WRAP_IAT_GPA
+    buf = bytearray()
+    disp = []
+    rel = []
+    marks = {}
+
+    def d32(va):
+        disp.append((len(buf), va))
+        buf.extend(b'\x00' * 4)
+
+    def r8(mk):
+        rel.append((len(buf), mk))
+        buf.append(0)
+
+    def mark(mk):
+        marks[mk] = len(buf)
+
+    buf += b'\x57'                        # push edi
+    buf += b'\xE8\x00\x00\x00\x00'        # call $+5
+    base = stub_va + len(buf)             # pop edi 的 VA
+    buf += b'\x5F'                        # pop edi
+    buf += b'\x8B\x87'; d32(gdwf_va)      # mov eax,[edi+gdwf-base]
+    buf += b'\x85\xC0'
+    buf += b'\x75'; r8('have')
+    buf += b'\x8D\x87'; d32(str1_va)
+    buf += b'\x50'
+    buf += b'\xFF\x97'; d32(gmh_va)
+    buf += b'\x85\xC0'
+    buf += b'\x74'; r8('raw')
+    buf += b'\x50'
+    buf += b'\x8D\x87'; d32(str2_va)
+    buf += b'\x50'
+    buf += b'\xFF\x97'; d32(gpa_va)
+    buf += b'\x89\x87'; d32(gdwf_va)
+    mark('have')
+    buf += b'\x8B\x87'; d32(gdwf_va)
+    buf += b'\x85\xC0'
+    buf += b'\x74'; r8('raw')
+    buf += b'\x8B\xC3'                    # mov eax,ebx（Self）
+    buf += b'\x8D\x97'; d32(DPI_GH_VA)    # lea edx,[edi+gh-base]
+    buf += b'\xFF\xD2'                    # call edx → eax = hwnd
+    buf += b'\x50'
+    buf += b'\xFF\x97'; d32(gdwf_va)      # call [edi+gdwf-base] → eax = dpi
+    buf += b'\x85\xC0'
+    buf += b'\x74'; r8('raw')
+    buf += b'\x8B\xC8'                    # mov ecx,eax（dpi）
+    buf += b'\x0F\xB7\x45\x08'            # movzx eax, word [ebp+8]（X）
+    buf += b'\x6B\xC0\x60'                # imul eax,eax,96
+    buf += b'\x33\xD2'
+    buf += b'\xF7\xF1'                    # div ecx
+    buf += b'\x8B\xF8'                    # mov edi,eax（X'）
+    buf += b'\x0F\xB7\x45\x0C'            # movzx eax, word [ebp+0xC]（Y）
+    buf += b'\x6B\xC0\x60'
+    buf += b'\x33\xD2'
+    buf += b'\xF7\xF1'
+    buf += b'\xC1\xE0\x10'                # shl eax,16
+    buf += b'\x0B\xC7'                    # or eax,edi
+    buf += b'\x5F'                        # pop edi
+    buf += b'\xC3'
+    mark('raw')
+    buf += b'\x0F\xB7\x45\x08'            # movzx eax, word [ebp+8]
+    buf += b'\x0F\xB7\x55\x0C'            # movzx edx, word [ebp+0xC]
+    buf += b'\xC1\xE2\x10'                # shl edx,16
+    buf += b'\x0B\xC2'                    # or eax,edx
+    buf += b'\x5F'                        # pop edi
+    buf += b'\xC3'
+
+    for pos, va in disp:
+        struct.pack_into('<i', buf, pos, va - base)
+    for pos, mk in rel:
+        buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
+    return bytes(buf)
+
+
+def patch_dpi_anchor(data: bytearray) -> bytearray:
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('锚点换算：找不到 .cave 节')
+    helper = _build_anchor_helper(DPI_WRAP_IB + cave_rva + DPI_ANCHOR_HELPER_OFF,
+                                  DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF)
+    if len(helper) > 0x100:
+        raise RuntimeError(f'锚点换算：助手过长 {len(helper)}')
+    if any(data[cave_raw + DPI_ANCHOR_HELPER_OFF:
+               cave_raw + DPI_ANCHOR_HELPER_OFF + len(helper)]):
+        raise RuntimeError('锚点换算：助手位置非空')
+    data[cave_raw + DPI_ANCHOR_HELPER_OFF:
+         cave_raw + DPI_ANCHOR_HELPER_OFF + len(helper)] = helper
+    helper_va = DPI_WRAP_IB + cave_rva + DPI_ANCHOR_HELPER_OFF
+    patched = 0
+    for site in DPI_DRAG_CALLS:
+        fo = site - 0x400C00
+        found = None
+        for k in range(fo, fo - 0x40, -1):
+            if bytes(data[k:k + 9]) == DPI_ANCHOR_PATTERN:
+                rel = struct.unpack_from('<i', data, k + 9)[0]
+                if (k + 0x400C00 + 13) + rel == DPI_ANCHOR_MAKELPARAM:
+                    found = k
+                    break
+        if found is None:
+            raise RuntimeError(f'锚点换算：0x{site:X} 附近找不到 MAKELPARAM 序列')
+        data[found:found + 13] = b'\xE8' + struct.pack(
+            '<i', helper_va - (found + 0x400C00 + 5)) + b'\x90' * 8
+        patched += 1
+    print(f'拖动锚点换算已应用: {patched} 处')
+    return data
+
+
+def patch_dpi_drag(data: bytearray) -> bytearray:
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('拖动包装：找不到 .cave 节')
+    stub_va = DPI_WRAP_IB + cave_rva + DPI_DRAG_STUB_OFF
+    stub = _build_drag_wrap_stub(stub_va, DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF)
+    if len(stub) > 0x200:
+        raise RuntimeError(f'拖动包装：桩过长 {len(stub)}')
+    if any(data[cave_raw + DPI_DRAG_STUB_OFF: cave_raw + DPI_DRAG_STUB_OFF + len(stub)]):
+        raise RuntimeError('拖动包装：桩位置非空')
+    data[cave_raw + DPI_DRAG_STUB_OFF: cave_raw + DPI_DRAG_STUB_OFF + len(stub)] = stub
+    for site in DPI_DRAG_CALLS:
+        fo = site - 0x400C00
+        if data[fo] != 0xE8:
+            raise RuntimeError(f'拖动包装：0x{site:X} 不是 call')
+        rel = struct.unpack_from('<i', data, fo + 1)[0]
+        if site + 5 + rel != DPI_DRAG_CALL_ORIG:
+            raise RuntimeError(f'拖动包装：0x{site:X} 调用目标不符')
+        struct.pack_into('<i', data, fo + 1, stub_va - (site + 5))
+    print(f'拖动修复已应用: {len(DPI_DRAG_CALLS)} 处 SC_DRAGMOVE SendMessage 包装 @ .cave+0x{DPI_DRAG_STUB_OFF:X}')
+    return data
+
+
 def patch_dpi_wrap(data: bytearray) -> bytearray:
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1160,17 +1399,22 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
     if set(found) != {'load', 'request'}:
         raise RuntimeError(f'DPI 包装：导出缺失 {found}')
 
-    # 数据区（PSET 初始为 0）
+    # 数据区（PSET/GDWF 初始为 0）
     blob = b'\x00' * 4 + b'user32.dll\x00' + b'\x00' * (DPI_WRAP_SETNAME - DPI_WRAP_USER32 - 11) \
         + b'SetThreadDpiAwarenessContext\x00'
+    blob += b'\x00' * (DPI_GETDPI_SLOT - len(blob))
+    blob += b'\x00' * 4
+    blob += b'GetDpiForWindow\x00'
     data[cave_raw + DPI_WRAP_DATA_OFF: cave_raw + DPI_WRAP_DATA_OFF + len(blob)] = blob
 
-    for nm, off_ in (('request', DPI_WRAP_REQ_OFF), ('load', DPI_WRAP_LOAD_OFF)):
+    targets = (('request', DPI_WRAP_REQ_OFF), ('load', DPI_WRAP_LOAD_OFF))
+    for nm, off_ in targets:
         ordi, frva = found[nm]
-        limit = (0x1F8 if off_ == DPI_WRAP_REQ_OFF else 0x2000)
-        stub = _build_dpi_wrap_stub(DPI_WRAP_IB + cave_rva + off_,
-                                    DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF,
-                                    DPI_WRAP_IB + frva)
+        sv = DPI_WRAP_IB + cave_rva + off_
+        dv = DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF
+        tv = DPI_WRAP_IB + frva
+        stub = _build_dpi_wrap_stub(sv, dv, tv)
+        limit = (0x1F8 if nm == 'request' else 0x2000)
         if len(stub) > limit - off_:
             raise RuntimeError(f'DPI 包装：{nm} 桩过长 {len(stub)}')
         if any(data[cave_raw + off_: cave_raw + off_ + len(stub)]):
@@ -1178,7 +1422,7 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
         data[cave_raw + off_: cave_raw + off_ + len(stub)] = stub
         struct.pack_into('<I', data, rva_off(afn) + 4 * ordi, cave_rva + off_)
 
-    print(f'高分屏缩放已应用: load/request 导出包装 @ .cave+0x{DPI_WRAP_LOAD_OFF:X}/0x{DPI_WRAP_REQ_OFF:X}')
+    print(f'高分屏缩放已应用: load/request 导出包装 @ 0x{DPI_WRAP_LOAD_OFF:X}/0x{DPI_WRAP_REQ_OFF:X}')
     return data
 
 
@@ -1352,6 +1596,145 @@ def patch_aitxt(data: bytearray) -> bytearray:
     return data
 
 
+# ------------------------------------------------------------- misaki.dll（透明窗命中区）
+# 幽灵的透明窗（文字信息窗 / 模拟时钟 / 倒计时）是 WS_EX_LAYERED +
+# UpdateLayeredWindow 逐像素 alpha 窗口，图层位图由 misaki.dll 管理；系统按图层
+# alpha 做逐像素命中判定（alpha==0 穿透），DPI 虚拟化下只有字形能命中、拖不动。
+# 这里把 misaki 的 allclear 清零填充值改成 0x01（alpha=1/255，肉眼不可见但可命中）
+# → 整个窗口进入命中区。配合 first.dll 侧把信息窗窗口高度改成“只剩文字区”
+# （见 PATCHES 第 3 条），整窗命中即等于文字区命中；时钟本就整窗可拖。
+# 只改 misaki 自己 allclear 的两处行清零调用，不影响其它零填充。
+MISAKI_ORIG_CRC32 = 0x5B172E3D
+MISAKI_ORIG_SIZE = 482816
+MISAKI_CAVE_VA = 0x465584          # 代码段尾部零填充（1148 字节，无任何引用）
+MISAKI_ZFILL_WRAP = 0x406C38       # xor ecx,ecx; call _FillChar; ret（清零助手）
+MISAKI_FILLCHAR = 0x4029C4         # Delphi _FillChar（EAX=目标, EDX=字节数, CL=值）
+MISAKI_SITE_A = 0x4622D4           # allclear 32bpp 行清零 call
+MISAKI_SITE_B = 0x462333           # allclear 24bpp 行清零 call
+MISAKI_INFO_W = 148                # 信息窗宽度（行字节 592/444）
+MISAKI_CLOCK_W = 64                # 时钟宽度（行字节 256/192）
+
+
+def _misaki_call(site_va, target_va):
+    return b'\xE8' + struct.pack('<i', target_va - (site_va + 5))
+
+
+def _build_misaki_stub(cave_va):
+    """小桩：进入时 EAX=行指针, EDX=行字节数, EBX=图层id, EDI=行号, ESI=剩余行数。
+
+    不调用任何方法、不用绝对地址，直接用循环里现成的寄存器判断图层：
+      高度 = EDI + ESI；行字节数 = 宽度×4（32bpp 循环）或 宽度×3（24bpp 循环）。
+
+    - 信息窗（148 宽：592/444 行字节，128 或 64 高都算）：整层填 0x01；
+    - 时钟（64 宽：256/192 行字节）：整体填 0x01；
+    - 其余图层（倒计时等）：原样清零。
+    """
+    code = bytearray()
+    fix = []
+    lab = {}
+
+    def emit(*bs):
+        code.extend(bs)
+
+    def cmp_eax(v):
+        emit(0x3D); code.extend(struct.pack('<I', v))
+
+    def cmp_edx(v):
+        emit(0x81, 0xFA); code.extend(struct.pack('<I', v))
+
+    def cj(cc, label):
+        fix.append((len(code), label)); emit(cc, 0)
+
+    def uj(label):
+        fix.append((len(code), label)); emit(0xEB, 0)
+
+    emit(0x50)                  # push eax（保存行指针）
+    emit(0x8D, 0x04, 0x3E)      # lea eax,[edi+esi] ; 高度
+    cmp_eax(128)
+    cj(0x74, 'size')            # je  -> 再看行字节
+    cmp_eax(64)
+    cj(0x75, 'zero')            # jne -> 其它图层原样清零
+
+    lab['size'] = len(code)
+    cmp_edx(MISAKI_INFO_W * 4)  # 信息窗
+    cj(0x74, 'one')
+    cmp_edx(MISAKI_INFO_W * 3)
+    cj(0x74, 'one')
+    cmp_edx(MISAKI_CLOCK_W * 4) # 时钟
+    cj(0x74, 'one')
+    cmp_edx(MISAKI_CLOCK_W * 3)
+    cj(0x74, 'one')
+    uj('zero')
+
+    lab['one'] = len(code)              # 填 0x01（命中区）
+    emit(0x58)                          # pop eax
+    emit(0xB1, 0x01)                    # mov cl,1
+    emit(0xE9); code.extend(struct.pack('<i', MISAKI_FILLCHAR - (cave_va + len(code) + 4)))
+
+    lab['zero'] = len(code)             # 原样清零
+    emit(0x58)                          # pop eax
+    emit(0xE9); code.extend(struct.pack(
+        '<i', MISAKI_ZFILL_WRAP - (cave_va + len(code) + 4)))
+
+    for pos, label in fix:
+        code[pos + 1] = (lab[label] - (pos + 2)) & 0xFF
+    return bytes(code)
+
+
+def build_misaki() -> bytes:
+    """构建 output/misaki.dll 并返回补丁后的数据。"""
+    base = os.path.dirname(os.path.abspath(__file__))
+    src_path = os.path.join(base, 'input', 'misaki.dll')
+    out_path = os.path.join(base, 'output', 'misaki.dll')
+    with open(src_path, 'rb') as f:
+        orig = f.read()
+    crc = zlib.crc32(orig) & 0xFFFFFFFF
+    if len(orig) != MISAKI_ORIG_SIZE or crc != MISAKI_ORIG_CRC32:
+        raise RuntimeError(
+            f'input/misaki.dll 与预期不符 (size={len(orig)} crc32={crc:08x}，'
+            f'预期 size={MISAKI_ORIG_SIZE} crc32={MISAKI_ORIG_CRC32:08x})')
+
+    data = bytearray(orig)
+    fo = MISAKI_CAVE_VA - 0x400C00
+    stub = _build_misaki_stub(MISAKI_CAVE_VA)
+    if any(data[fo:fo + len(stub)]):
+        raise RuntimeError('misaki：cave 位置非空')
+    data[fo:fo + len(stub)] = stub
+    for site in (MISAKI_SITE_A, MISAKI_SITE_B):
+        off = site - 0x400C00
+        want = _misaki_call(site, MISAKI_ZFILL_WRAP)
+        if bytes(data[off:off + 5]) != want:
+            raise RuntimeError(f'misaki：0x{site:X} 原始字节不符')
+        data[off:off + 5] = _misaki_call(site, MISAKI_CAVE_VA)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, 'wb') as f:
+        f.write(bytes(data))
+    print(f'misaki.dll 写入完成 → {out_path}')
+    print(f'  allclear 行清零填充值改为 0x01（信息窗整层 / 时钟整窗，1/255 不可见）')
+    return bytes(data)
+
+
+def deploy_misaki(data: bytes, dst: str):
+    """部署 misaki.dll：校验目标当前内容（只接受原始/本脚本历史版本），首次备份原文件。"""
+    with open(dst, 'rb') as f:
+        cur = f.read()
+    cur_crc = zlib.crc32(cur) & 0xFFFFFFFF
+    known = (MISAKI_ORIG_CRC32, 0x0BF872B8, 0x3E1F48F3, 0xED6A0FDE, 0xE70CC889,
+             0xAD29F5BA, 0x782E2359, 0xC53C5D89,
+             zlib.crc32(data) & 0xFFFFFFFF)
+    if cur_crc not in known:
+        raise RuntimeError(f'misaki 部署目标当前内容未知 (crc32={cur_crc:08x})，拒绝覆盖: {dst}')
+    bak = os.path.join(os.path.dirname(os.path.abspath(dst)), 'misaki.dll.bak')
+    if not os.path.exists(bak):
+        with open(bak, 'wb') as f:
+            f.write(cur)
+        print(f'已备份原始文件 → {bak}')
+    with open(dst, 'wb') as f:
+        f.write(data)
+    print(f'已复制 → {dst}')
+
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 DLL_IN = os.path.join(BASE, 'input', 'first.dll')
 CSV_IN = os.path.join(BASE, 'translated.csv')
@@ -1392,6 +1775,21 @@ for row in rows:
         ok += 1
         continue
 
+    if typ == 'pchar':
+        # 无长度头的 PChar 字面量（前面不是字符串头！不能写 off-4）：
+        # 只写内容+NUL，容量 = 原长 + 3（原字面量后的 3 个补零字节须存在）。
+        cap = length + 3
+        if data[off + length : off + cap] != b'\x00' * 3:
+            print(f'PChar尾部非零: off=0x{off:X} text={repr(text)}')
+            skip += 1; continue
+        if len(raw) + 1 > cap:
+            print(f'PChar超长: off=0x{off:X} 容量={cap} 新={len(raw)} text={repr(text)}')
+            skip += 1; continue
+        data[off : off + len(raw)] = raw
+        data[off + len(raw) : off + cap] = b'\x00' * (cap - len(raw))
+        ok += 1
+        continue
+
     if len(raw) > length:
         data[off : off + length] = raw[:length]
         if typ == 'code':
@@ -1417,17 +1815,16 @@ print('兼容补丁已应用: NOTIFY 分发 (0x719E9) + 诱导模式字符串清
 data = patch_dfm_charset(data)
 print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
 
-# 纯数据：Scaled=False → True（VCL 按屏幕 DPI 自动缩放窗体控件/字体）
-# 与导出包装互斥，见 DFM_SCALED_ENABLE 说明。
-if DFM_SCALED_ENABLE:
-    data = patch_dfm_scaled(data)
-    print('DFM Scaled 已改: False → True（窗体随屏幕 DPI 缩放）')
-
 data = patch_extra_link(data)
 
 # 高分屏缩放：load/request 导出包装（请求期间线程置 UNAWARE_GDISCALED）
 if DPI_WRAP_ENABLE:
     data = patch_dpi_wrap(data)
+    # 信息窗拖动：SC_DRAGMOVE 的 SendMessage 包装
+    data = patch_dpi_drag(data)
+    # 拖动坐标换算（物理像素 → 虚拟坐标）
+    if DPI_ANCHOR_ENABLE:
+        data = patch_dpi_anchor(data)
 
 data = patch_aitxt(data)
 
@@ -1435,10 +1832,18 @@ os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:
     f.write(data)
 
-print(f'写入完成 → {DLL_OUT}')
+print(f'first.dll 写入完成 → {DLL_OUT}')
+
+# ---- misaki.dll（透明窗命中区：整层 alpha=1，1/255 不可见但可命中）----
+misaki_data = build_misaki()
+
+# ---- 部署：命令行第一个参数 = ghost master 目录（或其下任一 dll 文件路径）----
 if len(sys.argv) >= 2:
     dst = sys.argv[1]
-    shutil.copy2(DLL_OUT, dst)
-    print(f'已复制 → {dst}')
+    target_dir = dst if os.path.isdir(dst) else os.path.dirname(os.path.abspath(dst))
+    first_dst = os.path.join(target_dir, 'first.dll')
+    shutil.copy2(DLL_OUT, first_dst)
+    print(f'已复制 → {first_dst}')
+    deploy_misaki(misaki_data, os.path.join(target_dir, 'misaki.dll'))
 
 print(f'  写入: {ok}  截断: {trunc}  跳过: {skip}')

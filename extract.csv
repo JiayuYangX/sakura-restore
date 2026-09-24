@@ -523,6 +523,11 @@ Offset,Length,Type,Text
 0x65480,12,code,面体サイコロ
 0x65498,24,code,つ‥‥\w8\w8っと。\w8\w8
 0x65690,179,code,\0\s0いわゆるダイス‥‥\w8\w8だね。\w8\w8\1\s0ダイスやね。\w8\w8\0\n\n基本的にエディットボックスにダイス式を入れて、Enter するだけ。\w8\w8\n\n2d6+10 とか、足し算引き算もできるよ。
+0x66A08,5,code,Arial
+0x66AE4,5,code,Arial
+0x67C70,5,code,Arial
+0x67F60,5,code,Arial
+0x67F88,5,code,Arial
 0x688E0,38,code,"\![leave,passivemode]\0\s0設定完了っ。"
 0x68A1C,257,code,"\0\s0一つだけ注意を。\w8\w8\n\nWin9x はデスクトップへの透明度付き描画能力が欠落しているから、\w8\_b[correctimage.png,20,78]\w8\n\n\n\n\n\n\nこんな風に綺麗には、出ません。\w8\w8\n\nこれはもうしょうがないので、諦めてね。\w8\w8\1\s0見えるだけマシだと思ってや。"
 0x6A98C,22,code,ネトゲの作法を教え込む
@@ -626,6 +631,7 @@ Offset,Length,Type,Text
 0x6C2F8,3,code,式 
 0x6C304,15,code,複座型突撃仕様M
 0x6C31C,54,code,the end of genesis T.M.R evolution turbo type D 的発想
+0x6E86C,5,code,Arial
 0x6F3E4,92,code,\0\s0ASテクノロジっていうのは、その昔 CompJapan っていうところが開発した技術で‥‥\w8\w8\n\n
 0x6F44C,146,code,\s7なんと！\w8\w8\s5for ループで意味もなく足し算とか引き算を繰り返していると、メモリが最適化されてマシンが速くなるという、凄い技術なのです！\w8\w8
 0x6F4E8,138,code,\1\s0‥‥\w8\w8\w8いや、ちゅーか、\w8詐欺やろ。それ。\w8\w8\0\s5\n\nうにゅうは余計なこと言わないっ！\w8\w8\n\n詳しくはこのサイトを見てね。
