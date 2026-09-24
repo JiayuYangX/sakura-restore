@@ -42,9 +42,10 @@ RSS 链接补丁（OnAnchorSelect 打开浏览器）：
     游戏退出收尾（PENDING+GAMELEFT）、游戏菜单缓存、视力取消输入框按“空提交”
     处理（响应 \\![raise,OnEyesightgameInput,]）。
   - 桩B（双击判定，挂 0x4782BD）：菜单/输入框/视力答题中双击吞掉；打字/问答
-    双击重放该游戏菜单；视力已进入但未弹框时交还原版脱身脚本。
-  - 关窗体辅助桩（由桩A 的 .setpend 调用）：退出时 FindWindowA + WM_CLOSE 关
-    Ttypinggameform / Teyesightform / Tcountdownform；CloseQuery 跳板保证
+    双击重放该游戏菜单；视力已进入但未弹框时置 PENDING（桩A 前置含
+    leave,passivemode 的收尾命令）+ 调关窗小段，再走原版出主菜单。
+  - 关窗体辅助桩（由桩A 的 .setpend / 关窗小段调用）：FindWindowA + WM_CLOSE
+    关 Ttypinggameform / Teyesightform / Tcountdownform；CloseQuery 跳板保证
     GAMELEFT 期间打字框可关。
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
@@ -162,10 +163,10 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 # .cave 布局（0x2000 字节追加节；改动后应做区间重叠检查）：
 #   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x100 "\![open,browser,"
 #   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
-#   0x400 关窗体辅助桩 | 0x500 双击判定桩B | 0x600 响应监控桩A
+#   0x380 视力双击小段 | 0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
 #   0x940 标志组(FLAG/MARK/PENDING/GAMELEFT/SWALLOW/EYEBUSY)
 #   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
-#   0x1050 CLOSE_CMD | 0x10C0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100)
+#   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100)
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
 FLAG_OFF = 0x940                   # 输入框标志（dword：1=有 SSP 输入框打开）
@@ -178,18 +179,23 @@ CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x96
 CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
 EYE_CANCEL_STR_OFF = 0x140         # 空提交脚本 dstr（视力取消输入框时回它）
 EYE_CANCEL_DATA_OFF = 0x148        # 上面的数据指针（桩A 里 LStrAsg 用）
+EYE_DC_STUB_OFF = 0x380            # 视力未弹框双击小段：自设 ebx 调关窗辅助桩
+                                   # （辅助桩占 0x400-0x486，改布局时勿重叠）
 # 说明：问答游戏的答题框是 SSP 的 inputbox；打字游戏的框是 DLL 自己的窗体
 #      （由辅助桩 WM_CLOSE 关闭，不靠这些命令）。多关几个箱型无副作用。
+#      `leave,passivemode` 追加在尾部：问答/打字退出时 DLL 自身响应本来就以
+#      该命令开头（等价冗余）；视力"未弹框双击"路径靠它退被动。
 CLOSE_CMD = (b'\\![quicksection,false]'
              b'\\![close,communicatebox]'
              b'\\![close,teachbox]'
-             b'\\![close,inputbox,__SYSTEM_ALL_INPUT__]')
+             b'\\![close,inputbox,__SYSTEM_ALL_INPUT__]'
+             b'\\![leave,passivemode]')
 PBUF_LEN_OFF = 0x10FC              # PENDING 前置拼接缓冲：长度（rc 在 -4，数据在 +4）
 PBUF_DATA_OFF = 0x1100             # 数据（cap 0xE00）
 TYPING_CLOSEQ_OFF = 0x6E200        # formCloseQuery：CanClose := 窗体.已提交标志[Self+0x321]
 TYPING_CLOSEQ_ORIG = bytes.fromhex('8A 80 21 03 00 00 88 01 C3')
 TYPING_CLOSEQ_VA = 0x46EE00
-CAVE_Q_OFF = 0x10C0                # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
+CAVE_Q_OFF = 0x10D0                # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -265,7 +271,7 @@ def _build_resp_monitor_stub(rva):
            Enter → 清 GAMELEFT；其余（进度事件）→ 见 GAMELEFT。
          - OnEy*（视力）：Next → MARK=1+EYEBUSY=1（题已弹框）；Input →
            MARK=0+EYEBUSY=0（本局结束）；其余（Enter 等）→ MARK=1+EYEBUSY=0
-           （未弹框，双击交还原版脱身脚本）。
+           （未弹框，双击走"置 PENDING + 关窗小段 + 原版出主菜单"）。
 
        【固定动作】
          - PENDING：把 CLOSE_CMD 前置到本次响应（仅一次，关普通输入框）；
@@ -417,7 +423,7 @@ def _build_resp_monitor_stub(rva):
     b += b'\xC6\x02\x01'                                # mov byte [edx],1（PENDING）
     b += b'\xC6\x42\x04\x01'                            # mov byte [edx+4],1（GAMELEFT）
     # 立即关游戏窗体：辅助桩按类名找 Ttypinggameform/Teyesightform/Tcountdownform 并投递
-    # WM_CLOSE（异步）。打字框的 CloseQuery 由 .cave+0x10C0 的桩在 GAMELEFT
+    # WM_CLOSE（异步）。打字框的 CloseQuery 由 .cave+0x10D0 的桩在 GAMELEFT
     # 时放行；视力窗本来就无拦截。全程无键盘消息，故没有编辑框回车提示音。
     call_abs(rva - 0x200)                               # 辅助桩在 cave+0x400（stubA 起点-0x200）
     jmp32('clrb')
@@ -561,7 +567,7 @@ def _build_resp_monitor_stub(rva):
 
 
 def _build_typing_closeq_stub(cave_va):
-    """formCloseQuery 跳板（.cave+0x10C0，挂在 0x46EE00）。
+    """formCloseQuery 跳板（.cave+0x10D0，挂在 0x46EE00）。
 
     原逻辑：CanClose := 窗体.已提交标志（[Self+0x321]）——只有回车提交路径和
     游戏超时会置位。GAMELEFT=1（已从游戏退出）时直接放行关闭，配合辅助桩发的
@@ -593,8 +599,8 @@ def _build_closebox_stub(cave_va):
         - "Teyesightform"：问答第一题的 C 图窗 / 视力检查共用；
         - "Tcountdownform"：倒计时窗（无 FormClose 处理器 → 关闭=隐藏）。
       都是 FindWindowA 找到后各发一条 WM_CLOSE，让 DLL 走自己的 Close 路径
-      （打字框的 CloseQuery 需先放行，由 .cave+0x10C0 的桩在 GAMELEFT 时处理；
-      另外两个窗体本来就无拦截）。全程没有键盘消息 → 无编辑框回车提示音。
+      （打字框的 CloseQuery 需先放行，由 .cave+0x10D0 的桩在 GAMELEFT 时处理；
+       另外两个窗体本来就无拦截）。全程没有键盘消息 → 无编辑框回车提示音。
       PostMessage 异步投递，不会死锁（同步调用是之前卡死的教训）。
     """
     b = bytearray()
@@ -666,6 +672,30 @@ def _build_closebox_stub(cave_va):
     return bytes(b), bytes(strs)
 
 
+def _build_eye_dc_stub(cave_va):
+    """视力未弹框双击小段（.cave+0x380，由桩B 调用）：自设 ebx 后调关窗辅助桩
+    （竞态兜底：万一 C 图窗已出现就 WM_CLOSE 掉）。
+    注意：辅助桩以 ebx=cave+0x60B 为基址且**不**恢复它——调用方必须自己设置/恢复，
+    否则用垃圾指针调 FindWindowA → 异常 → SSP 收 500
+    （桩A 本来就以 ebx=cave+0x60B 跑；桩B 的 ebx 是外部值，需本小段兜底）。"""
+    rva = cave_va + EYE_DC_STUB_OFF
+    b = bytearray()
+    va = lambda i: rva + i
+
+    def rel32(target, at):
+        return struct.pack('<i', target - va(at + 4))
+
+    b += b'\x53'                                                  # 0: push ebx（保存调用者）
+    b += b'\xE8\x00\x00\x00\x00'                                  # 1: call $+5
+    b += b'\x5B'                                                  # 6: pop ebx (= va(6))
+    b += b'\x81\xC3' + struct.pack('<i', 0x60B - (EYE_DC_STUB_OFF + 6))  # 7: add ebx,Δ（→ cave+0x60B）
+    b += b'\xE8' + rel32(cave_va + 0x400, 14)                     # 13: call 关窗辅助桩
+    b += b'\x5B'                                                  # 18: pop ebx（恢复）
+    b += b'\xC3'                                                  # 19: ret
+    assert len(b) == 20, hex(len(b))
+    return bytes(b)
+
+
 def _build_dc_status_stub(rva):
     """双击入口桩（挂在 0x4782BD，request() 帧内，EBP 有效）：
 
@@ -673,8 +703,9 @@ def _build_dc_status_stub(rva):
       1) 请求含 "Status: choosing"（选择肢/菜单等待中）→ 吞掉（204）；
       2) 请求含 "passive"（游戏进行中）：
          - EYEBUSY=1（视力题目的窗口+输入框已弹出）→ 吞掉（防误触退出）；
-         - MARK=1（视力已进入但还没弹框）→ 交还原版逻辑（原版双击会给
-           "close inputbox + leave,passivemode + 重新 raise 双击" 的脱身脚本）；
+         - MARK=1（视力已进入但还没弹框）→ 置 PENDING（桩A 前置含
+           leave,passivemode 的 CLOSE_CMD）+ 关窗小段 + 清响应走原版入口出主菜单
+           （原版该入口依赖请求里的鼠标 Reference，真实双击事件才有）。
          - MARK=0（打字/问答）→ 菜单缓存（cave+0x960）非空则 LStrAsg 写回
            缓存菜单（方便点「退出」）；为空则吞掉。
       3) 输入框标志 FLAG=1（搜索等 SSP 输入框打开）→ 吞掉；
@@ -758,8 +789,7 @@ def _build_dc_status_stub(rva):
     b += b'\x83\xF9\x07'                               # cmp ecx,7
     jcc32(0x0F, 0x82, 'flagchk')                          # jb .flagchk（距离远，rel32）
     b += b'\x8D\x74\x0F\xF9'                          # lea esi,[ecx+edi-7]
-    b += b'\x8B\xD1'                                    # mov edx,ecx
-    b += b'\x83\xEA\x06'                               # sub edx,6
+    b += b'\x8D\x51\xFA'                               # lea edx,[ecx-6]
     label('ps')
     b += b'\x81\x3F\x70\x61\x73\x73'                # cmp [edi],'pass'
     j8(0x75, 'pn')
@@ -773,12 +803,12 @@ def _build_dc_status_stub(rva):
     j8(0x75, 'ps')
     jcc32(0x0F, 0x84, 'flagchk')                          # 未找到 → .flagchk（距离远，rel32）
 
-    # --- passive：EYEBUSY → 吞；MARK → 原版；否则重放缓存 ---
+    # --- passive：EYEBUSY → 吞；MARK → 收尾+原版出主菜单；否则重放缓存 ---
     label('passive')
     b += b'\x80\xB8' + struct.pack('<i', eye_off) + b'\x00'   # cmp byte [eax+EYEBUSY],0
     jcc32(0x0F, 0x85, 'suppress')                         # jne .suppress（视力答题中双击禁用）
     b += b'\x83\xB8' + struct.pack('<i', mark_off) + b'\x00'  # cmp dword [eax+MARK],0
-    jcc32(0x0F, 0x85, 'normal')                           # jne .normal（视力未弹框 → 交还原版）
+    jcc32(0x0F, 0x85, 'eyeexit')                          # jne .eyeexit（视力未弹框 → 收尾+出菜单）
     b += b'\x83\xB8' + struct.pack('<i', cache_len_off) + b'\x00'   # cmp dword [eax+cache_len],0
     jcc32(0x0F, 0x84, 'suppress')                         # je .suppress（无缓存 → 吞）
     b += b'\x8D\x90' + struct.pack('<i', cache_data_off)  # lea edx,[eax+cache_data]（缓存串）
@@ -802,6 +832,15 @@ def _build_dc_status_stub(rva):
     b += b'\x8D\x45\xE4'                               # lea eax,[ebp-0x1c]
     call_abs(0x403BC0)                                    # call 0x403BC0（清响应）
     jmp_abs(DC_CONT_VA)                                   # jmp 0x4782C5（原入口）
+    # --- 视力未弹框：置 PENDING（桩A 前置 CLOSE_CMD，含 leave,passivemode）+
+    #     调关窗小段（竞态）+ 清响应走原版出主菜单（依赖真实双击的鼠标 Reference）---
+    label('eyeexit')
+    b += b'\x5E\x5F'                                    # pop esi/edi
+    call_abs(rva + (EYE_DC_STUB_OFF - CAVE_B_OFF))        # call .cave+0x380（关窗小段）
+    b += b'\xC6\x40' + bytes([PENDING_OFF - FLAG_OFF]) + b'\x01'  # mov byte [eax+PENDING],1
+    b += b'\x8D\x45\xE4'                               # lea eax,[ebp-0x1c]
+    call_abs(0x403BC0)                                    # call 0x403BC0（清响应）
+    jmp_abs(DC_CONT_VA)                                   # jmp 0x4782C5（原入口 → 主菜单）
     # --- 解算分支 ---
     for kind, pos, name in fixups:
         t = labels[name]
@@ -862,6 +901,10 @@ def patch_extra_link(data: bytearray) -> bytearray:
     _cb, _cbstrs = _build_closebox_stub(cave_va)
     data[raw + 0x400:raw + 0x400 + len(_cb)] = _cb
     data[raw + 0x110:raw + 0x110 + len(_cbstrs)] = _cbstrs
+
+    # 视力未弹框双击小段（桩B 调用：自设 ebx → 调关窗辅助桩）
+    _edc = _build_eye_dc_stub(cave_va)
+    data[raw + EYE_DC_STUB_OFF:raw + EYE_DC_STUB_OFF + len(_edc)] = _edc
 
     # 跳板：GAMELEFT 时放行 formCloseQuery（配合辅助桩的 WM_CLOSE 关框）
     stubQ = _build_typing_closeq_stub(cave_va)
