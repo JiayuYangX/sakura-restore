@@ -125,6 +125,33 @@ def patch_dfm_charset(data: bytearray) -> bytearray:
     return data
 
 
+DFM_SCALED_OLD = b'\x06Scaled\x08'      # 属性名(6)+vaFalse
+DFM_SCALED_NEW = b'\x06Scaled\x09'      # vaTrue
+
+
+def patch_dfm_scaled(data: bytearray) -> bytearray:
+    """把各窗体 DFM 里的 `Scaled = False` 改成 `True`（纯数据，不动任何 API）。
+
+    VCL 载入窗体时若 `Scaled=True` 且 `Screen.PixelsPerInch ≠ 窗体 PixelsPerInch(96)`，
+    会按屏幕 DPI 自动缩放控件的位置/尺寸/字体——高分屏下各窗体的界面元素变大；
+    模拟时钟等「按窗体尺寸比例自绘」的会跟着放大。
+    覆盖不到：按硬编码像素绘制的部分（如视力 C 图字号 192、悬停提示窗）。"""
+    pos = 0
+    n = 0
+    while True:
+        p = data.find(DFM_SCALED_OLD, pos)
+        if p < 0:
+            break
+        pos = p + len(DFM_SCALED_OLD)
+        if data.rfind(b'TPF0', 0, p) < 0:       # 只动 TPF0 窗体数据块里的
+            continue
+        data[p + 7] = DFM_SCALED_NEW[7]         # vaFalse -> vaTrue
+        n += 1
+    if n < 10:
+        raise RuntimeError(f'DFM Scaled 修补数量异常: {n}（期望 10+）')
+    return data
+
+
 # ------------------------------------------------- 链接化补丁（海原雄山）
 
 LINKIFY_CALL_OFF = 0xA9E37          # 最后一段（木野さん）的 call 0x4AA838
@@ -212,10 +239,13 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 # .cave 布局（0x2000 字节追加节；改动后应做区间重叠检查）：
 #   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x100 "\![open,browser,"
 #   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
+#   0x1F8-0x3FF 链接桩2 响应缓冲（string 头 + 数据，链接文档）
 #   0x380 视力双击小段 | 0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
 #   0x940 标志组(FLAG/MARK/PENDING/GAMELEFT/SWALLOW/EYEBUSY)
 #   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
-#   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100)
+#   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100，
+#          数据可达 0x1F7B，故 0x1F7C 之后才空)
+
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
 FLAG_OFF = 0x940                   # 输入框标志（dword：1=有 SSP 输入框打开）
@@ -1212,6 +1242,10 @@ print('兼容补丁已应用: NOTIFY 分发 (0x719E9) + 诱导模式字符串清
 # 必须在文本翻译写入之后再移位（翻译随 DFM 区块一起平移，结构保持自洽）
 data = patch_dfm_charset(data)
 print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
+
+# 纯数据：Scaled=False → True（VCL 按屏幕 DPI 自动缩放窗体控件/字体）
+data = patch_dfm_scaled(data)
+print('DFM Scaled 已改: False → True（窗体随屏幕 DPI 缩放）')
 
 data = patch_extra_link(data)
 
