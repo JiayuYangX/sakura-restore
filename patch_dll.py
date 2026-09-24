@@ -128,6 +128,11 @@ def patch_dfm_charset(data: bytearray) -> bytearray:
 DFM_SCALED_OLD = b'\x06Scaled\x08'      # 属性名(6)+vaFalse
 DFM_SCALED_NEW = b'\x06Scaled\x09'      # vaTrue
 
+# 注意：此补丁与「高分屏缩放（导出包装，DPI_WRAP_ENABLE）」**互斥**——
+# Scaled=True 会让 VCL 按屏幕 DPI 放大一次，而导出包装会让系统再缩放一次（双重放大）。
+# 包装方案覆盖面更全（含自绘文字），故默认关闭本补丁。
+DFM_SCALED_ENABLE = False
+
 
 def patch_dfm_scaled(data: bytearray) -> bytearray:
     """把各窗体 DFM 里的 `Scaled = False` 改成 `True`（纯数据，不动任何 API）。
@@ -245,6 +250,8 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 #   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
 #   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100，
 #          数据可达 0x1F7B，故 0x1F7C 之后才空)
+#   高分屏包装桩：request@0x170（空闲段 0x167-0x1F7）| load@0x1F7C（尾段）| 数据@0xB0
+#   （PSET/字符串，占用 0xA7-0xFF 空闲段）
 
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
@@ -1008,6 +1015,173 @@ def patch_extra_link(data: bytearray) -> bytearray:
     return data
 
 
+# ------------------------------------------------------------- 高分屏缩放（导出包装）
+# 不碰 CreateWindowEx 跳板/API 导入，改成把 DLL 的 load / request 两个导出入口
+# 重定向到 .cave 的包装桩：调用真实函数前后把当前线程的 DPI 感知上下文临时切到
+# UNAWARE_GDISCALED（-5），系统即按屏幕缩放、以 GDI 方式清晰放大这些窗口
+# （含窗口控件与 FormPaint 自绘文字）。请求之外 SSP 自己的界面不受影响。
+# 这些导出是「调用方清栈」（函数末尾为裸 ret），所以桩也以裸 ret 返回；
+# 真实函数调用后由桩 add esp,8 清掉自压的实参副本。桩为位置无关代码，
+# 全部状态在栈上（可重入/多线程安全）；PSET 指针惰性解析后存 .cave。
+DPI_WRAP_REQ_OFF = 0x170      # request 包装桩（0x170-0x1F7 空闲，须 < 0x1F8）
+DPI_WRAP_LOAD_OFF = 0x1F7C    # load 包装桩（0x1F7C-0x1FFF 空闲，须 ≤ 0x2000）
+DPI_WRAP_DATA_OFF = 0xB0      # 数据：PSET(+0) / "user32.dll"(+4) / "SetThreadDpiAwarenessContext"(+0x10)
+DPI_WRAP_IAT_GMH = 0x4B31E4   # GetModuleHandleA 的 IAT 槽（VA，首选基址 0x400000）
+DPI_WRAP_IAT_GPA = 0x4B31E0   # GetProcAddress 的 IAT 槽（VA）
+DPI_WRAP_PSET = 0x00
+DPI_WRAP_USER32 = 0x04
+DPI_WRAP_SETNAME = 0x10
+DPI_WRAP_IB = 0x400000        # 映像首选基址
+DPI_WRAP_ENABLE = True        # 总开关：出问题改 False 重建即可回到普通构建
+
+
+def _build_dpi_wrap_stub(stub_va, data_va, target_va):
+    """位置无关的导出包装桩（stub/data/target 均为首选基址下的 VA）。"""
+    pset_va = data_va + DPI_WRAP_PSET
+    str1_va = data_va + DPI_WRAP_USER32
+    str2_va = data_va + DPI_WRAP_SETNAME
+    gmh_va = DPI_WRAP_IAT_GMH
+    gpa_va = DPI_WRAP_IAT_GPA
+    buf = bytearray()
+    disp = []
+    rel = []
+    marks = {}
+
+    def d32(va):
+        disp.append((len(buf), va))
+        buf.extend(b'\x00' * 4)
+
+    def r8(mk):
+        rel.append((len(buf), mk))
+        buf.append(0)
+
+    def mark(mk):
+        marks[mk] = len(buf)
+
+    buf += b'\x53\x56'                    # push ebx ; push esi
+    buf += b'\xE8\x00\x00\x00\x00'        # call $+5
+    base = stub_va + len(buf)             # pop ebx 所在 VA
+    buf += b'\x5B'                        # pop ebx
+    buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
+    buf += b'\x85\xC0'                    # test eax,eax
+    buf += b'\x75'; r8('ctx')             # jne .ctx
+    buf += b'\x8D\x83'; d32(str1_va)      # lea eax,[ebx+str1-base]
+    buf += b'\x50'                        # push eax
+    buf += b'\xFF\x93'; d32(gmh_va)       # call [ebx+gmh-base]  GMH("user32.dll")
+    buf += b'\x8B\xF0'                    # mov esi,eax
+    buf += b'\x85\xF6'                    # test esi,esi
+    buf += b'\x74'; r8('noctx')           # je .noctx
+    buf += b'\x8D\x83'; d32(str2_va)      # lea eax,[ebx+str2-base]
+    buf += b'\x50'                        # push eax
+    buf += b'\x56'                        # push esi
+    buf += b'\xFF\x93'; d32(gpa_va)       # call [ebx+gpa-base] GPA(hmod,name)
+    buf += b'\x85\xC0'                    # test eax,eax
+    buf += b'\x74'; r8('noctx')           # je .noctx
+    buf += b'\x89\x83'; d32(pset_va)      # mov [ebx+pset-base],eax
+    mark('ctx')
+    buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
+    buf += b'\x6A\xFB'                    # push -5（UNAWARE_GDISCALED）
+    buf += b'\xFF\xD0'                    # call eax
+    buf += b'\x50'                        # push eax（旧上下文）
+    buf += b'\xFF\x74\x24\x14'            # push [esp+0x14]（len 副本）
+    buf += b'\xFF\x74\x24\x14'            # push [esp+0x14]（h 副本）
+    buf += b'\x8D\x8B'; d32(target_va)    # lea ecx,[ebx+target-base]
+    buf += b'\xFF\xD1'                    # call ecx
+    buf += b'\x83\xC4\x08'                # add esp,8
+    buf += b'\x50'                        # push eax（保存返回值）
+    buf += b'\x52'                        # push edx
+    buf += b'\x8B\x4C\x24\x08'            # mov ecx,[esp+8]（旧上下文）
+    buf += b'\x51'                        # push ecx
+    buf += b'\xFF\x93'; d32(pset_va)      # call [ebx+pset-base] PSET(旧)
+    buf += b'\x5A\x58'                    # pop edx ; pop eax
+    buf += b'\x59'                        # pop ecx（丢弃旧上下文槽）
+    buf += b'\x5E\x5B'                    # pop esi ; pop ebx
+    buf += b'\xC3'                        # ret（调用方清栈）
+    mark('noctx')
+    buf += b'\xFF\x74\x24\x10'            # push [esp+0x10]（len 副本）
+    buf += b'\xFF\x74\x24\x10'            # push [esp+0x10]（h 副本）
+    buf += b'\x8D\x8B'; d32(target_va)
+    buf += b'\xFF\xD1'                    # call ecx
+    buf += b'\x83\xC4\x08'                # add esp,8
+    buf += b'\x5E\x5B'                    # pop esi ; pop ebx
+    buf += b'\xC3'                        # ret
+
+    for pos, va in disp:
+        struct.pack_into('<i', buf, pos, va - base)
+    for pos, mk in rel:
+        buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
+    return bytes(buf)
+
+
+def patch_dpi_wrap(data: bytearray) -> bytearray:
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('DPI 包装：找不到 .cave 节')
+
+    def rva_off(rva):
+        for i in range(nsec):
+            off = sec + 40 * i
+            va = _u32(data, off + 12)
+            vsz = _u32(data, off + 8)
+            raw = _u32(data, off + 20)
+            rsz = _u32(data, off + 16)
+            if va <= rva < va + max(vsz, rsz):
+                return raw + (rva - va)
+        raise RuntimeError(f'DPI 包装：RVA 0x{rva:X} 不在任何节内')
+
+    ed_rva = _u32(data, opt + 96)
+    if ed_rva == 0:
+        raise RuntimeError('DPI 包装：无导出表')
+    eo = rva_off(ed_rva)
+    nnam = _u32(data, eo + 24)
+    afn = _u32(data, eo + 28)
+    anm = _u32(data, eo + 32)
+    aord = _u32(data, eo + 36)
+    found = {}
+    for i in range(nnam):
+        no = rva_off(_u32(data, rva_off(anm) + 4 * i))
+        end = no
+        while data[end] != 0:
+            end += 1
+        nm = bytes(data[no:end]).decode('latin1')
+        if nm in ('load', 'request'):
+            ordi = _u16(data, rva_off(aord) + 2 * i)
+            found[nm] = (ordi, _u32(data, rva_off(afn) + 4 * ordi))
+    if set(found) != {'load', 'request'}:
+        raise RuntimeError(f'DPI 包装：导出缺失 {found}')
+
+    # 数据区（PSET 初始为 0）
+    blob = b'\x00' * 4 + b'user32.dll\x00' + b'\x00' * (DPI_WRAP_SETNAME - DPI_WRAP_USER32 - 11) \
+        + b'SetThreadDpiAwarenessContext\x00'
+    data[cave_raw + DPI_WRAP_DATA_OFF: cave_raw + DPI_WRAP_DATA_OFF + len(blob)] = blob
+
+    for nm, off_ in (('request', DPI_WRAP_REQ_OFF), ('load', DPI_WRAP_LOAD_OFF)):
+        ordi, frva = found[nm]
+        limit = (0x1F8 if off_ == DPI_WRAP_REQ_OFF else 0x2000)
+        stub = _build_dpi_wrap_stub(DPI_WRAP_IB + cave_rva + off_,
+                                    DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF,
+                                    DPI_WRAP_IB + frva)
+        if len(stub) > limit - off_:
+            raise RuntimeError(f'DPI 包装：{nm} 桩过长 {len(stub)}')
+        if any(data[cave_raw + off_: cave_raw + off_ + len(stub)]):
+            raise RuntimeError(f'DPI 包装：{nm} 桩位置非空')
+        data[cave_raw + off_: cave_raw + off_ + len(stub)] = stub
+        struct.pack_into('<I', data, rva_off(afn) + 4 * ordi, cave_rva + off_)
+
+    print(f'高分屏缩放已应用: load/request 导出包装 @ .cave+0x{DPI_WRAP_LOAD_OFF:X}/0x{DPI_WRAP_REQ_OFF:X}')
+    return data
+
+
 # ------------------------------------------------------------- AITXT 加密
 # 算法：1) 整块反转
 #       2) 与密钥流异或：keystream = MT19937(seed2) rand(0x7FFFFFFF) & 0xFF
@@ -1244,10 +1418,16 @@ data = patch_dfm_charset(data)
 print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
 
 # 纯数据：Scaled=False → True（VCL 按屏幕 DPI 自动缩放窗体控件/字体）
-data = patch_dfm_scaled(data)
-print('DFM Scaled 已改: False → True（窗体随屏幕 DPI 缩放）')
+# 与导出包装互斥，见 DFM_SCALED_ENABLE 说明。
+if DFM_SCALED_ENABLE:
+    data = patch_dfm_scaled(data)
+    print('DFM Scaled 已改: False → True（窗体随屏幕 DPI 缩放）')
 
 data = patch_extra_link(data)
+
+# 高分屏缩放：load/request 导出包装（请求期间线程置 UNAWARE_GDISCALED）
+if DPI_WRAP_ENABLE:
+    data = patch_dpi_wrap(data)
 
 data = patch_aitxt(data)
 
