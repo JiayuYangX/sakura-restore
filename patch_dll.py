@@ -50,6 +50,11 @@ first.dll：
       .cave 包装桩（拖动模态循环期间线程 GDISCALED），另有 6 处锚点坐标换算
       （物理像素 → 96dpi 虚拟坐标）。
 
+  状态栏重影修复（原版缺陷）：TStatusBar 的窗口类缺 CS_HREDRAW，拖动改变 Todo/Notify
+    宽度时系统不做整窗失效、旧像素残留（文字重影）。在 TWinControl.CreateWnd 调用虚拟
+    CreateParams 的指令处（0x4352C1）挂透明桩：仅当栈帧里类名为 "TStatusBar" 时给
+    Params.WindowClass.style 补 CS_HREDRAW；其余类原样通过，不碰 RegisterClassA。
+
 misaki.dll（透明窗命中区）：
   透明窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按图层
   alpha 做命中判定（alpha==0 穿透）；DPI 虚拟化下只有字形能命中、拖不动。
@@ -1352,6 +1357,178 @@ def patch_dpi_drag(data: bytearray) -> bytearray:
     return data
 
 
+# 系统字体初始化包装：应用/主题的系统字体（消息字体等）是在线程 DPI 感知时用
+# SystemParametersInfo(SPI_GETNONCLIENTMETRICS) 取到的（144dpi 规格），放进被系统
+# 虚拟化的窗口里会再被放大一次（Todo/Notify 状态栏提示字过大）。这里把两处
+# “系统字体初始化”调用（0x44E024）改指向包装桩：调用期间线程置 UNAWARE_GDISCALED，
+# 取到 96dpi 规格的系统字体，与其它控件一致；结束后还原。
+DPI_SYSFONT_ENABLE = True
+DPI_SYSFONT_STUB_OFF = 0x2200
+DPI_SYSFONT_FUNC = 0x44E024
+DPI_SYSFONT_CALLS = (0x44D946, 0x44EEED)
+
+
+def _build_sysfont_wrap_stub(stub_va, data_va):
+    """系统字体初始化包装桩：EAX=对象，无栈参数，原函数裸 ret。"""
+    pset_va = data_va + DPI_WRAP_PSET
+    str1_va = data_va + DPI_WRAP_USER32
+    str2_va = data_va + DPI_WRAP_SETNAME
+    gmh_va = DPI_WRAP_IAT_GMH
+    gpa_va = DPI_WRAP_IAT_GPA
+    buf = bytearray()
+    disp = []
+    rel = []
+    marks = {}
+
+    def d32(va):
+        disp.append((len(buf), va))
+        buf.extend(b'\x00' * 4)
+
+    def r8(mk):
+        rel.append((len(buf), mk))
+        buf.append(0)
+
+    def mark(mk):
+        marks[mk] = len(buf)
+
+    def call32(va):
+        pos = len(buf)
+        buf.append(0xE8)
+        buf.extend(struct.pack('<i', va - (stub_va + pos + 5)))
+
+    buf += b'\x9C\x60'                    # pushfd ; pushad
+    buf += b'\x8B\x6C\x24\x1C'          # mov ebp,[esp+0x1C]（原 eax = 对象）
+    buf += b'\xE8\x00\x00\x00\x00'     # call $+5
+    base = stub_va + len(buf)             # pop ebx 所在 VA
+    buf += b'\x5B'                        # pop ebx
+    buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
+    buf += b'\x85\xC0'
+    buf += b'\x75'; r8('ctx')
+    buf += b'\x8D\x83'; d32(str1_va)      # lea eax,[ebx+str1-base]
+    buf += b'\x50'
+    buf += b'\xFF\x93'; d32(gmh_va)       # call [ebx+gmh-base] GMH("user32.dll")
+    buf += b'\x8B\xF0'                    # mov esi,eax
+    buf += b'\x85\xF6'
+    buf += b'\x74'; r8('direct')           # je .direct
+    buf += b'\x8D\x83'; d32(str2_va)      # lea eax,[ebx+str2-base]
+    buf += b'\x50'
+    buf += b'\x56'
+    buf += b'\xFF\x93'; d32(gpa_va)       # call [ebx+gpa-base] GPA(hmod,name)
+    buf += b'\x85\xC0'
+    buf += b'\x74'; r8('direct')
+    buf += b'\x89\x83'; d32(pset_va)      # mov [ebx+pset-base],eax
+    mark('ctx')
+    buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
+    buf += b'\x6A\xFB'                    # push -5（UNAWARE_GDISCALED）
+    buf += b'\xFF\xD0'                    # call eax
+    buf += b'\x8B\xF0'                    # mov esi,eax（旧上下文）
+    buf += b'\x8B\xC5'                    # mov eax,ebp（对象）
+    call32(DPI_SYSFONT_FUNC)                # call 原函数
+    buf += b'\x56'                        # push esi
+    buf += b'\x8B\x83'; d32(pset_va)
+    buf += b'\xFF\xD0'                    # call eax（PSET(旧)）
+    buf += b'\x61\x9D\xC3'               # popad ; popfd ; ret
+    mark('direct')
+    buf += b'\x8B\xC5'                    # mov eax,ebp
+    call32(DPI_SYSFONT_FUNC)
+    buf += b'\x61\x9D\xC3'               # popad ; popfd ; ret
+    for pos, va in disp:
+        struct.pack_into('<i', buf, pos, va - base)
+    for pos, mk in rel:
+        buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
+    return bytes(buf)
+
+
+def patch_dpi_sysfont(data: bytearray) -> bytearray:
+    """把系统字体初始化调用改为包装桩（期间线程 GDISCALED → 96dpi 规格）。"""
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('系统字体包装：找不到 .cave 节')
+    stub_va = DPI_WRAP_IB + cave_rva + DPI_SYSFONT_STUB_OFF
+    stub = _build_sysfont_wrap_stub(stub_va, DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF)
+    if len(stub) > 0x200:
+        raise RuntimeError(f'系统字体包装：桩过长 {len(stub)}')
+    if any(data[cave_raw + DPI_SYSFONT_STUB_OFF: cave_raw + DPI_SYSFONT_STUB_OFF + len(stub)]):
+        raise RuntimeError('系统字体包装：桩位置非空')
+    data[cave_raw + DPI_SYSFONT_STUB_OFF: cave_raw + DPI_SYSFONT_STUB_OFF + len(stub)] = stub
+    for site in DPI_SYSFONT_CALLS:
+        fo = site - 0x400C00
+        if data[fo] != 0xE8:
+            raise RuntimeError(f'系统字体包装：0x{site:X} 不是 call')
+        rel = struct.unpack_from('<i', data, fo + 1)[0]
+        if site + 5 + rel != DPI_SYSFONT_FUNC:
+            raise RuntimeError(f'系统字体包装：0x{site:X} 调用目标不对')
+        struct.pack_into('<i', data, fo + 1, stub_va - (site + 5))
+    print(f'系统字体包装已应用: {len(DPI_SYSFONT_CALLS)} 处 @ .cave+0x{DPI_SYSFONT_STUB_OFF:X}')
+    return data
+
+
+# 状态栏“改宽度不重绘”原始缺陷修复：VCL 给 TStatusBar 注册的窗口类缺 CS_HREDRAW，
+# 改变宽度时系统不整窗失效 → 状态栏旧文字残留（重影/发虚，原版同款）。
+# 做法：在 TWinControl.CreateWnd 调用（虚拟）CreateParams 的调用点挂透明小桩：
+#   原序列 = mov ecx,[eax]; call [ecx+0x90]（5 字节，位于 0x4352BF）
+#   桩内先补完原调用，再判断 CreateWnd 栈帧里刚填好的类名缓冲区（[ebp-0x40]）——
+#   仅当 == "TStatusBar" 时给 Params.WindowClass.style（[ebp-0x68]）或上 CS_HREDRAW，
+#   然后返回。只影响状态栏类，不碰 RegisterClassA，也不改其它窗口类。
+CRPARAMS_HREDRAW_ENABLE = True
+CRPARAMS_SITE = 0x4352C1
+CRPARAMS_ORIG = bytes.fromhex('FF 91 90 00 00 00')   # call [ecx+0x90]（ecx=虚表，调用方已设）
+CRPARAMS_STUB_OFF = 0x22C0
+
+
+def _build_createparams_stub():
+    """CreateParams 调用点透明桩（进入时 eax=控件对象，ecx=虚表，ebp=CreateWnd 栈帧）。"""
+    b = bytearray()
+    b += b'\xFF\x91\x90\x00\x00\x00'    # call [ecx+0x90]（补回原调用：CreateParams）
+    b += b'\x81\x7D\xC0\x54\x53\x74\x61'   # cmp dword [ebp-0x40], "TSta"
+    b += b'\x75\x0D'                    # jne .done
+    b += b'\x81\x7D\xC4\x74\x75\x73\x42'   # cmp dword [ebp-0x3C], "tusB"
+    b += b'\x75\x04'                    # jne .done
+    b += b'\x83\x4D\x98\x02'          # or dword [ebp-0x68], 2（CS_HREDRAW）
+    b += b'\xC3'                         # ret
+    return bytes(b)
+
+
+def patch_createparams_hredraw(data: bytearray) -> bytearray:
+    """给 TStatusBar 的 WindowClass.style 补 CS_HREDRAW（状态栏 resize 不再残留重影）。"""
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('状态栏类样式：找不到 .cave 节')
+    fo = CRPARAMS_SITE - 0x400C00
+    if bytes(data[fo:fo + len(CRPARAMS_ORIG)]) != CRPARAMS_ORIG:
+        raise RuntimeError(f'状态栏类样式：0x{CRPARAMS_SITE:X} 原始字节不符')
+    cave_va = DPI_WRAP_IB + cave_rva
+    stub_va = cave_va + CRPARAMS_STUB_OFF
+    stub = _build_createparams_stub()
+    if any(data[cave_raw + CRPARAMS_STUB_OFF: cave_raw + CRPARAMS_STUB_OFF + len(stub)]):
+        raise RuntimeError('状态栏类样式：桩位置非空')
+    data[cave_raw + CRPARAMS_STUB_OFF: cave_raw + CRPARAMS_STUB_OFF + len(stub)] = stub
+    data[fo:fo + 5] = b'\xE8' + struct.pack('<i', stub_va - (CRPARAMS_SITE + 5))
+    data[fo + 5:fo + 6] = b'\x90'       # 原调用是 6 字节：call(5)+NOP(1)（桩尾用 ret 返回）
+    print(f'状态栏类样式补丁已应用: CreateParams 调用点 + 仅 TStatusBar 补 CS_HREDRAW')
+    return data
+
+
 def patch_dpi_wrap(data: bytearray) -> bytearray:
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1825,6 +2002,12 @@ if DPI_WRAP_ENABLE:
     # 拖动坐标换算（物理像素 → 虚拟坐标）
     if DPI_ANCHOR_ENABLE:
         data = patch_dpi_anchor(data)
+    # 系统字体初始化包装（状态栏提示字等系统字体取 96dpi 规格）
+    if DPI_SYSFONT_ENABLE:
+        data = patch_dpi_sysfont(data)
+    # 状态栏类补 CS_HREDRAW（仅 TStatusBar，CreateParams 调用点透明桩）
+    if CRPARAMS_HREDRAW_ENABLE:
+        data = patch_createparams_hredraw(data)
 
 data = patch_aitxt(data)
 

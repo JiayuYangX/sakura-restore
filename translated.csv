@@ -493,7 +493,7 @@ Offset,Length,Type,Text
 0x63500,59,code,\0\s8\n\n哎呀……\w8\w8因为用鼠标什么的太麻烦了。\w8\w8
 0x63544,40,code,\1\n\n……\w8\w8总有一天会被捅的。\w8\w8
 0x63578,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点总可以做到吧。
-0x635F0,10,code,信息
+0x635F0,10,code,消息
 0x63E4C,4,code,星期
 0x63E5C,5,code, 
 0x6441C,27,code,\0\s0记录完成……\w8\w8好。
@@ -514,7 +514,7 @@ Offset,Length,Type,Text
 0x64864,40,code,\1\n\n……\w8\w8总有一天会被捅的。\w8\w8
 0x64898,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点总可以做到吧。
 0x64AC0,15,code,\0\s0添加完成。
-0x64AFC,10,code,信息
+0x64AFC,10,code,消息
 0x64B34,18,code,时间条件（* 为每）
 0x64B74,51,code,可执行文件的完整路径（可通过拖放文件输入）
 0x653E8,51,code,\0\s1唔。\w8\w8数量真多啊。\w8\w8\n\n\s[20]
