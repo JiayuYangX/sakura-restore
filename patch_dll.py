@@ -50,10 +50,12 @@ RSS 链接补丁（OnAnchorSelect 打开浏览器）：
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
 
-SHIFTJIS_OFFSETS = {
-    0xD6BB0, 0xD6BF0, 0xD6C4B, 0xD7E4E, 0xD7E8C, 0xD7ED1,
-    0xD7F12, 0xD7F53, 0xD7F99, 0xD7FE3, 0xD802B, 0xD806F,
-}
+# 需要按 Shift-JIS 写入的偏移（其余一律 GBK）。
+# 空白：原先 12 条窗口 label 文案必须 SJIS（所在窗体 Font.Charset=SHIFTJIS_CHARSET，
+# TLabel 走 GDI 自绘、按字体 charset 的代码页 CP932 解释字节）；
+# 现已把 Tfirstconfigform / Tnotifyform 的 Font.Charset 改成 GB2312_CHARSET
+# （见 patch_dfm_charset），这些 label 的字节改按 ACP(936) 解释，随大流用 GBK。
+SHIFTJIS_OFFSETS = set()
 
 # （偏移, 原始字节, 替换字节）
 PATCHES = [
@@ -74,6 +76,53 @@ def apply_patches(data: bytes) -> bytes:
             )
         out = out[:off] + repl + out[off + len(repl):]
     return out
+
+
+# ------------------------------------------------- DFM 窗体字体编码
+
+DFM_CHARSET_OLD = b'\x07\x10SHIFTJIS_CHARSET'   # 值编码：[0x07][长度][标识符]
+DFM_CHARSET_NEW = b'\x07\x0EGB2312_CHARSET'
+DFM_CHARSET_FORMS = (b'Tfirstconfigform', b'Tnotifyform')
+
+
+def patch_dfm_charset(data: bytearray) -> bytearray:
+    """把两个窗体（Tfirstconfigform / Tnotifyform）DFM 里的 Font.Charset
+    从 SHIFTJIS_CHARSET 改成 GB2312_CHARSET。
+
+    背景：DLL 是 ANSI 程序，`TLabel` 由 VCL 用 GDI 的 ANSI 文本函数自绘，
+    GDI 按「当前字体 charset 对应的代码页」解释字节——这两个窗体原设
+    SHIFTJIS_CHARSET（CP932），所以窗内 label 文案必须写 Shift-JIS；
+    改成 GB2312_CHARSET 后按 CP936 解释，label 文案可随大流用 GBK
+    （窗内的按钮/勾选框等窗口控件本来就走 ACP，不受影响）。
+
+    标识符 16→14 字节：把该值之后到本窗体数据块末尾的内容整体左移 2 字节、
+    块尾补 0（块总长不变，后续资源位置不动）。**必须在文本翻译写入之后执行**
+    （翻译按原始偏移写好后随这次移位一起平移，保持 DFM 结构自洽）。
+    """
+    delta = len(DFM_CHARSET_OLD) - len(DFM_CHARSET_NEW)
+    pos = 0
+    n = 0
+    while True:
+        p = data.find(b'Font.Charset' + DFM_CHARSET_OLD, pos)
+        if p < 0:
+            break
+        vs = p + len(b'Font.Charset')               # 值起始（0x07 处）
+        ts = data.rfind(b'TPF0', 0, p)              # 所属窗体数据块
+        ln = data[ts + 4] if ts >= 0 else 0
+        cls = bytes(data[ts + 5:ts + 5 + ln]) if ts >= 0 else b''
+        if cls in DFM_CHARSET_FORMS:
+            nxt = data.find(b'TPF0', ts + 4)        # 本地区块末尾（下一个窗体起点）
+            if nxt < 0:
+                nxt = len(data)
+            data[vs:vs + len(DFM_CHARSET_NEW)] = DFM_CHARSET_NEW
+            data[vs + len(DFM_CHARSET_NEW):nxt - delta] = \
+                data[vs + len(DFM_CHARSET_OLD):nxt]
+            data[nxt - delta:nxt] = b'\x00' * delta
+            n += 1
+        pos = vs + len(DFM_CHARSET_NEW)
+    if n != 2:
+        raise RuntimeError(f'DFM Font.Charset 修补数量异常: {n}（期望 2）')
+    return data
 
 
 # ------------------------------------------------- 链接化补丁（海原雄山）
@@ -1159,6 +1208,10 @@ for row in rows:
 
 data = bytearray(apply_patches(bytes(data)))
 print('兼容补丁已应用: NOTIFY 分发 (0x719E9) + 诱导模式字符串清零 (0x79E08)')
+
+# 必须在文本翻译写入之后再移位（翻译随 DFM 区块一起平移，结构保持自洽）
+data = patch_dfm_charset(data)
+print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
 
 data = patch_extra_link(data)
 
