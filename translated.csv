@@ -494,7 +494,7 @@ Offset,Length,Type,Text
 0x63544,40,code,\1\n\n……\w8\w8总有一天会被捅的。\w8\w8
 0x63578,75,code,\0\s[20]\n\nEnter 确定，DEL 删除。\w8\w8\n\s0这点总可以做到吧。
 0x635F0,10,code,消息
-0x63E4C,4,code,星期
+0x63E4C,4,code,每周
 0x63E5C,5,code, 
 0x6441C,27,code,\0\s0记录完成……\w8\w8好。
 0x64554,101,code,\t\0\s0基本上，就是指定时间，到了时间就弹出消息通知，这么个功能。\w8\w8
@@ -1022,7 +1022,7 @@ Offset,Length,Type,Text
 0x7E938,58,code,\0\s1诶……\w8\w8好，\w4\s0那，我从现在起重新数4分钟吧。
 0x7E994,47,code,\0\s0嗯。\w8\w8\n\n\s5那，我从现在起数5分钟哦。
 0x7E9CC,58,code,\0\s1诶……\w8\w8好，\w4\s0那，我从现在起重新数5分钟吧。
-0x7EA10,64,code,"\![enter,passivemode]\0\s5设置完成后按 OK 按钮哦。"
+0x7EA10,64,code,"\![enter,passivemode]\0\s5设置完成后请点 OK 按钮哦。"
 0x7EA78,90,code,"\s[20]清空回收站……\w8\w8好。\w8\w8\n\n\![raise,Execute,clearrecyclebin]\s5搞定了。"
 0x7EADC,109,code,"\s[20]清除最近使用的文件……\w8\w8好。\w8\w8\n\n\![raise,Execute,clearrecentdirectory]\s5搞定了。"
 0x7EC28,23,code,\0\s0通知列表。
