@@ -59,7 +59,17 @@ misaki.dll（透明窗命中区）：
   透明窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按图层
   alpha 做命中判定（alpha==0 穿透）；DPI 虚拟化下只有字形能命中、拖不动。
   把 allclear 清零填充值改成 0x01（alpha=1/255，肉眼不可见但可命中），配合
-  first.dll 的信息窗高度减半 → 信息窗整窗（=文字区）可拖、时钟整窗可拖。
+   first.dll 的信息窗高度减半 → 信息窗整窗（=文字区）可拖、时钟整窗可拖。
+
+first.dll 退出崩溃修复层（patch_exit_fix）：
+    SSP 退出时模块卸载后残留的"僵尸活动"（消息派发等）会落到已卸载代码上，
+    造成退出崩溃（0x1476a / 0x7474 一族）。本层把修复动作精确插在
+    「teardown 返回之后、FreeLibrary 之前」：存根先销毁两个注册窗体
+    （其析构触发原生存档），再 call 原 teardown 等其返回，随后立即
+    EnumWindows，对 WndProc 落在模块地址范围内的窗口做
+    SetWindowLong(hwnd,-4, DefWindowProcA) 断路，最后 ret 交还 SSP，
+    由 SSP 自行 FreeLibrary。全程同步：无定时器、无辅助线程、无轮询。
+
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata, zlib
 
@@ -1891,18 +1901,164 @@ def build_misaki() -> bytes:
     return bytes(data)
 
 
-CLEANUP_EXT_ENABLE = True
-CLEANUP_EXT_STUB_OFF = 0x22E0
-CLEANUP_EXT_FLAG_OFF = 0x23F0
+# ============================================================================
+# 退出崩溃修复层（v110 终版逻辑）
+# ----------------------------------------------------------------------------
+# 背景：SSP 退出时若放任原生流程，first.dll 卸载后残留的"僵尸活动"（窗口消息
+#       派发等）会执行到已卸载模块的代码上（故障偏移 0x1476a / 0x7474 一族）；
+#       而若提前处理（在存根销毁或 teardown 期间做断路），又会破坏模块自身的
+#       收尾存档流程（0x2E44 一族）。
+# 正解 = 把断路动作精确插在「teardown 返回之后、FreeLibrary 之前」：
+#
+#   SSP 退出
+#     -> 调用 unload 导出（经原入口的内联跳转进入本层存根）
+#     -> 存根：诊断箱位 -> 销毁两个注册窗体对象（析构触发原生存档）
+#     -> call 原 teardown 函数体，等它返回（模块仍存活、存档已完成）
+#     -> 立即 EnumWindows：对「WndProc 落在模块地址范围内」的窗口
+#        SetWindowLong(hwnd,-4, DefWindowProcA) 断路 —— 之后任何消息都
+#        不会再回到已卸载模块的窗口过程
+#     -> ret 交还 SSP；SSP 之后才 FreeLibrary（由调用序保证，无竞速）
+#
+# 全程同步：无定时器、无辅助线程、无轮询、无 VirtualAlloc。
+#
+# 布局（.cave 固定偏移，均在空闲区，与既有桩/数据区无重叠）：
+#   0x22E0  存根     0x80B（v12 原布局：箱位 + 双销毁 + 本层尾部）
+#   0x226A  收尾例程 ~30B（teardown 返回后执行）
+#   0x2360  枚举回调 ~77B（断路）
+# ============================================================================
+EXITFIX_ENABLE = True
+EXITFIX_STUB_OFF = 0x22E0        # 存根
+EXITFIX_POST_OFF = 0x226A        # 收尾例程（teardown 返回后执行）
+EXITFIX_CB_OFF   = 0x2360        # 枚举回调（断路）
+EXITFIX_STR_PTR1 = 0x23D0        # 箱位字符串指针 1（指向空闲零区，仅保留 v12 布局）
+EXITFIX_STR_PTR2 = 0x23F0        # 箱位字符串指针 2
+EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口（内联跳转用）
+EXITFIX_UNLOAD_PROLOG = bytes.fromhex('55 8B EC 51 53')   # 原 unload 入口序言
+
+_EXF_IAT_MSGBOX = 0xB35F8        # MessageBoxA（被 SSP 拦截；箱位仅保留 v12 布局）
+_EXF_IAT_GWL    = 0xB3664        # GetWindowLongA
+_EXF_IAT_SWL    = 0xB3568        # SetWindowLongA
+_EXF_IAT_DEFWND = 0xB3764        # DefWindowProcA
+_EXF_IAT_ENUMW  = 0xB3714        # EnumWindows
+_EXF_FREE_THUNK = 0x402E40       # TObject.Free 跳板
+_EXF_SLOT_A     = 0x4B08CC       # 注册窗体槽 A（Tnotifyform）
+_EXF_VMT_A      = 0x464280
+_EXF_SLOT_B     = 0x4B298C       # 注册窗体槽 B（Tfirstconfigform）
+_EXF_VMT_B      = 0x468DC8
+_EXF_TEARDOWN   = 0x4AA239       # 原 unload 函数体（重放序言后跳入处）
+_EXF_EXPECT_CAVE_RVA = 0xE2000   # .cave 期望 RVA（add_cave_section 的固定结果）
 
 
-def patch_cleanup_ext(data: bytearray) -> bytearray:
-    if not CLEANUP_EXT_ENABLE:
+def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
+    """存根（0x80B）：箱位 + 销毁槽 A/B + call teardown 等返回 + 跳收尾例程。"""
+    anchor = stub_va + 6
+    def L(va):                    # 绝对 VA 相对锚点的位移
+        return struct.pack('<i', va - anchor)
+    def C(off):                   # .cave 内偏移 -> 位移
+        return L(cave_va + off)
+    b = bytearray()
+    b += b'\x60'                                        # pushal
+    b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx
+    # —— 诊断箱位（保留 v12 原布局；SSP 拦截 MessageBoxA 后为空操作）——
+    b += b'\x6A\x00'                                    # push 0
+    b += b'\x8D\x83' + C(EXITFIX_STR_PTR1)              # lea eax,[ebx+str1]
+    b += b'\x50'                                        # push eax
+    b += b'\x8D\x83' + C(EXITFIX_STR_PTR2)              # lea eax,[ebx+str2]
+    b += b'\x50'                                        # push eax
+    b += b'\x6A\x00'                                    # push 0
+    b += b'\xFF\x93' + L(0x400000 + _EXF_IAT_MSGBOX)    # call [MessageBoxA]
+    # —— 销毁槽 A（Tnotifyform）：RTTI 校验 -> TObject.Free -> 槽清零 ——
+    b += b'\x8B\x83' + L(_EXF_SLOT_A)                   # mov eax,[slotA]
+    b += b'\x85\xC0'                                    # test eax,eax
+    b += b'\x74\x1E'                                    # je +0x1E
+    b += b'\x8B\x08'                                    # mov ecx,[eax]
+    b += b'\x8D\x93' + L(_EXF_VMT_A)                    # lea edx,[vmtA]
+    b += b'\x3B\xCA'                                    # cmp ecx,edx
+    b += b'\x75\x12'                                    # jne +0x12
+    b += b'\x8D\x93' + L(_EXF_FREE_THUNK)               # lea edx,[free]
+    b += b'\xFF\xD2'                                    # call edx
+    b += b'\xC7\x83' + L(_EXF_SLOT_A) + b'\x00\x00\x00\x00'   # mov [slotA],0
+    # —— 销毁槽 B（Tfirstconfigform）：同构 ——
+    b += b'\x8B\x83' + L(_EXF_SLOT_B)                   # mov eax,[slotB]
+    b += b'\x85\xC0'
+    b += b'\x74\x1E'
+    b += b'\x8B\x08'
+    b += b'\x8D\x93' + L(_EXF_VMT_B)
+    b += b'\x3B\xCA'
+    b += b'\x75\x12'
+    b += b'\x8D\x93' + L(_EXF_FREE_THUNK)
+    b += b'\xFF\xD2'
+    b += b'\xC7\x83' + L(_EXF_SLOT_B) + b'\x00\x00\x00\x00'
+    # —— 尾部：popal + 重放序言 + call teardown（等返回）+ jmp 收尾例程 ——
+    b += b'\x61'                                        # popal
+    b += b'\x55\x8B\xEC\x51\x53'                        # 重放序言（= 原函数前 5 字节）
+    here = stub_va + len(b)
+    b += b'\xE8' + struct.pack('<i', _EXF_TEARDOWN - (here + 5))   # _EXF_TEARDOWN 已是 VA
+    here = stub_va + len(b)
+    b += b'\xE9' + struct.pack('<i', (cave_va + EXITFIX_POST_OFF) - (here + 5))
+    b += b'\x00'                                        # 对齐填充
+    assert len(b) == 0x80, len(b)
+    return bytes(b)
+
+
+def _exitfix_post(cave_va: int) -> bytes:
+    """收尾例程：teardown 返回后，立即发起 EnumWindows 断路一轮，然后交还 SSP。"""
+    pv = cave_va + EXITFIX_POST_OFF
+    def L(va):
+        return struct.pack('<i', va - pv)
+    b = bytearray()
+    b += b'\x60'                                        # pushal
+    b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
+    b += b'\x6A\x00'                                    # push 0 （lParam）
+    b += b'\x8D\x83' + L(cave_va + EXITFIX_CB_OFF)      # lea eax,[ebx+cb]
+    b += b'\x50'                                        # push eax（回调）
+    b += b'\xFF\x93' + L(0x400000 + _EXF_IAT_ENUMW)     # call [EnumWindows]
+    b += b'\x61\xC3'                                    # popal; ret（栈顶即 SSP 返回址）
+    assert len(b) <= EXITFIX_CB_OFF - EXITFIX_POST_OFF, len(b)
+    return bytes(b)
+
+
+def _exitfix_cb(cave_va: int) -> bytes:
+    """枚举回调：WndProc 落在模块 [base, base+0x100000) 内 -> 断路。"""
+    cv = cave_va + EXITFIX_CB_OFF
+    def L(va):
+        return struct.pack('<i', va - cv)
+    b = bytearray()
+    b += b'\x60'                                        # pushal
+    b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
+    b += b'\x8B\x6C\x24\x24'                            # mov ebp,[esp+0x24]  (hwnd)
+    b += b'\x6A\xFC\x55\xFF\x93' + L(0x400000 + _EXF_IAT_GWL)   # GWL(hwnd,-4) -> eax
+    b += b'\x85\xC0'                                    # test eax,eax
+    j0 = len(b); b += b'\x74\x00'                       # je -> END
+    b += b'\x8B\xF0'                                    # mov esi,eax (W)
+    b += b'\x8B\xC3\x2D' + struct.pack('<I', cave_va + EXITFIX_CB_OFF - 0x400000)
+    #                                  ^ eax = ebx - (本回调 RVA) = 模块基址
+    b += b'\x8B\xD0'                                    # mov edx,eax (base)
+    b += b'\x3B\xF2'                                    # cmp esi,edx
+    j1 = len(b); b += b'\x72\x00'                       # jb -> END（W < base）
+    b += b'\x81\xC2\x00\x00\x10\x00'                    # add edx, 0x100000
+    b += b'\x3B\xF2'                                    # cmp esi,edx
+    j2 = len(b); b += b'\x73\x00'                       # jae -> END（W >= 上限）
+    # —— 断路：SetWindowLong(hwnd, -4, DefWindowProcA) ——
+    b += b'\xFF\xB3' + L(0x400000 + _EXF_IAT_DEFWND)    # push [DefWindowProcA]
+    b += b'\x6A\xFC\x55'                                # push -4; push hwnd
+    b += b'\xFF\x93' + L(0x400000 + _EXF_IAT_SWL)       # call [SetWindowLongA]
+    end = len(b)
+    b += b'\x61\xB8\x01\x00\x00\x00\xC2\x08\x00'        # popad; mov eax,1; ret 8
+    for j in (j0, j1, j2):
+        b[j + 1] = (end - (j + 2)) & 0xFF
+    assert len(b) <= 0x70, len(b)                       # 回调区上限 0x70（到 0x23D0）
+    return bytes(b)
+
+
+def patch_exit_fix(data: bytearray) -> bytearray:
+    """应用退出崩溃修复层。在 patch_dpi_wrap / patch_aitxt 之后调用。"""
+    if not EXITFIX_ENABLE:
         return data
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
-    opt_size = _u16(data, e + 20)
     opt = e + 24
+    opt_size = _u16(data, e + 20)
     sec = opt + opt_size
     cave_rva = cave_raw = None
     for i in range(nsec):
@@ -1911,7 +2067,10 @@ def patch_cleanup_ext(data: bytearray) -> bytearray:
             cave_rva = _u32(data, off + 12)
             cave_raw = _u32(data, off + 20)
     if cave_rva is None:
-        raise RuntimeError('cleanup ext：找不到 .cave 节')
+        raise RuntimeError('exitfix：未找到 .cave 段')
+    if cave_rva != _EXF_EXPECT_CAVE_RVA:
+        raise RuntimeError('exitfix：.cave RVA=0x%X 与预期 0x%X 不符' % (cave_rva, _EXF_EXPECT_CAVE_RVA))
+    cave_va = 0x400000 + cave_rva
 
     def rva_off(rva):
         for i in range(nsec):
@@ -1920,220 +2079,37 @@ def patch_cleanup_ext(data: bytearray) -> bytearray:
             vsz = _u32(data, off + 8)
             if va <= rva < va + vsz:
                 return _u32(data, off + 20) + (rva - va)
-        raise RuntimeError('cleanup ext：RVA 0x%X 不在任何节' % rva)
+        raise RuntimeError('exitfix：RVA 0x%X 不在任何节' % rva)
 
-    IAT = {'VQ': 0xB32E4, 'VA': 0xB32E8, 'EnumW': 0xB3714, 'GWL': 0xB3664,
-           'SWL': 0xB3568, 'DefWnd': 0xB3764, 'CreateThread': 0xB33DC, 'ExitThread': 0xB3208,
-           'Sleep': 0xB32EC, 'GCN': 0xB36F0}
-    cave_va = DPI_WRAP_IB + cave_rva
-    st_va = cave_va + CLEANUP_EXT_STUB_OFF
+    # —— 区域预检（防踩踏；.cave 新附录区应为全零）——
+    def expect_zero(off, ln, what):
+        if any(data[cave_raw + off:cave_raw + off + ln]):
+            raise RuntimeError('exitfix：%s @cave+0x%X 非零，疑似布局冲突' % (what, off))
+    expect_zero(EXITFIX_POST_OFF, 0x22C0 - EXITFIX_POST_OFF, '收尾例程区')  # 0x22C0 起为既有桩，避开
+    expect_zero(EXITFIX_CB_OFF, 0x70, '回调区')
+    if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x80]):
+        raise RuntimeError('exitfix：存根区 @cave+0x%X 非零' % EXITFIX_STUB_OFF)
 
-    # ============ 清道夫（自定位；Sleep 轮询等卸载；单扫；类名前缀/thunk 谓词） ============
-    D = {'base': 0, 'size': 4, 'VQ': 8, 'EnumW': 0xC, 'GWL': 0x10, 'SWL': 0x14,
-         'DefWnd': 0x18, 'ExitThread': 0x1C, 'Sleep': 0x20, 'GCN': 0x24}
-    rb = bytearray()
-    rb += bytes(10 * 4)
-    marks = {}
-    rel8 = []
+    # —— 写入本层三段 ——
+    d_stub = _exitfix_stub(cave_va + EXITFIX_STUB_OFF, cave_va)
+    data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + len(d_stub)] = d_stub
+    d_post = _exitfix_post(cave_va)
+    data[cave_raw + EXITFIX_POST_OFF:cave_raw + EXITFIX_POST_OFF + len(d_post)] = d_post
+    d_cb = _exitfix_cb(cave_va)
+    data[cave_raw + EXITFIX_CB_OFF:cave_raw + EXITFIX_CB_OFF + len(d_cb)] = d_cb
 
-    def m(mk):
-        marks[mk] = len(rb)
+    # —— 原 unload 入口（函数体第一条指令处）：内联跳转 -> 存根 ——
+    off_u = rva_off(EXITFIX_UNLOAD_RVA)
+    if bytes(data[off_u:off_u + 5]) != EXITFIX_UNLOAD_PROLOG:
+        raise RuntimeError('exitfix：unload 入口序言不符 %s' % data[off_u:off_u + 5].hex())
+    data[off_u:off_u + 5] = b'\xE9' + struct.pack('<i', (cave_va + EXITFIX_STUB_OFF) - (0x400000 + EXITFIX_UNLOAD_RVA + 5))
 
-    def j8(mk):
-        rel8.append((len(rb), mk))
-        rb.append(0)
-
-    def slot(op, sl):
-        rb.extend(bytes([op, 0x53, sl]))
-
-    rb += bytes([0xE8, 0, 0, 0, 0])
-    rb += bytes([0x5B])
-    rb += bytes([0x83, 0xEB, 10 * 4 + 5])                # sub ebx,45 -> 页基址
-    # 等卸载：Sleep(50) 轮询（上限 60s）
-    rb += bytes([0xBE]) + struct.pack('<I', 1200)
-    m('wait')
-    rb += bytes([0x6A, 0x32])
-    slot(0xFF, D['Sleep'])
-    rb += bytes([0x83, 0xEC, 0x20])
-    rb += bytes([0x8B, 0xD4])
-    rb += bytes([0x6A, 0x1C, 0x52])
-    rb += bytes([0xFF, 0x33])
-    slot(0xFF, D['VQ'])
-    rb += bytes([0x8B, 0x44, 0x24, 0x10])
-    rb += bytes([0x83, 0xC4, 0x20])
-    rb += bytes([0xA9, 0x00, 0x10, 0x00, 0x00])
-    rb += bytes([0x74]); j8('go')
-    rb += bytes([0x4E])
-    rb += bytes([0x75]); j8('wait')
-    m('go')
-    # 单次扫描
-    rb += bytes([0x6A, 0x00])
-    rb += bytes([0x8D, 0x83])
-    cbdisp_pos = len(rb)
-    rb += bytes(4)
-    rb += bytes([0x50])
-    slot(0xFF, D['EnumW'])
-    rb += bytes([0x6A, 0x00])
-    slot(0xFF, D['ExitThread'])
-    m('cb')
-    # ---- 回调：固定栈形 sub esp,0x40；类名缓冲@esp；MBI@esp+0x20 ----
-    rb += bytes([0x53, 0x56, 0x57])
-    rb += bytes([0x83, 0xEC, 0x40])
-    rb += bytes([0xE8, 0, 0, 0, 0])
-    cb_anchor = len(rb)
-    rb += bytes([0x5B])
-    rb += bytes([0x81, 0xEB]) + struct.pack('<I', cb_anchor)
-    rb += bytes([0x8B, 0x74, 0x24, 0x50])                # mov esi,[esp+0x50]（hwnd）
-    rb += bytes([0x6A, 0xFC, 0x56])
-    slot(0xFF, D['GWL'])
-    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
-    rb += bytes([0x8B, 0xF8])                            # mov edi,eax（proc）
-    rb += bytes([0x8B, 0xFC])                            # mov edi,esp（类名缓冲）
-    rb += bytes([0x6A, 0x1C, 0x57, 0x56])                # push 0x1C ; push edi ; push esi
-    slot(0xFF, D['GCN'])
-    rb += bytes([0x8B, 0x04, 0x24])                      # mov eax,[esp]
-    for v in (0x74555054, 0x746F6E54, 0x72696654):
-        rb += bytes([0x3D]) + struct.pack('<I', v) + bytes([0x74]); j8('destroy')
-    rb += bytes([0x6A, 0xFC, 0x56])                      # push -4 ; push esi（重取 proc）
-    slot(0xFF, D['GWL'])
-    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
-    rb += bytes([0x8B, 0xF8])                            # mov edi,eax
-    # VQ 保护（MBI @esp+0x20）
-    rb += bytes([0x8D, 0x54, 0x24, 0x20])
-    rb += bytes([0x6A, 0x1C, 0x52, 0x57])
-    slot(0xFF, D['VQ'])
-    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
-    rb += bytes([0x8B, 0x54, 0x24, 0x30])
-    rb += bytes([0xF7, 0xC2, 0x00, 0x10, 0x00, 0x00]) + bytes([0x74]); j8('epi')
-    rb += bytes([0x8B, 0x4C, 0x24, 0x34])
-    rb += bytes([0xF6, 0xC1, 0x01]) + bytes([0x75]); j8('epi')
-    rb += bytes([0xF7, 0xC1, 0x00, 0x01, 0x00, 0x00]) + bytes([0x75]); j8('epi')
-    # thunk 特征
-    rb += bytes([0x80, 0x3F, 0xE8]) + bytes([0x75]); j8('epi')
-    rb += bytes([0x8B, 0x57, 0x05])
-    rb += bytes([0x8B, 0x0B])
-    rb += bytes([0x39, 0xCA]) + bytes([0x72]); j8('epi')
-    rb += bytes([0x8B, 0x43, 0x04])
-    rb += bytes([0x01, 0xC8])
-    rb += bytes([0x39, 0xC2]) + bytes([0x73]); j8('epi')
-    m('destroy')
-    rb += bytes([0xFF, 0x73, D['DefWnd']])
-    rb += bytes([0x6A, 0xFC, 0x56])
-    slot(0xFF, D['SWL'])
-    m('epi')
-    rb += bytes([0x83, 0xC4, 0x40])
-    rb += bytes([0xB8, 1, 0, 0, 0])
-    rb += bytes([0x5F, 0x5E, 0x5B, 0xC2, 0x08, 0x00])
-    struct.pack_into('<i', rb, cbdisp_pos, marks['cb'])
-    for pos, mk in rel8:
-        d = marks[mk] - (pos + 1)
-        if not -128 <= d <= 127:
-            raise RuntimeError('cleanup ext：清道夫短跳超界 %s d=%d' % (mk, d))
-        rb[pos] = d & 0xFF
-    reaper_len = len(rb)
-
-    # ---- 找空洞放清道夫 ----
-    rp_off = None
-    i = 0x240
-    while i + reaper_len + 16 <= 0x2400:
-        seg = data[cave_raw + i: cave_raw + i + reaper_len + 16]
-        if not any(seg) and not any(data[cave_raw + max(0, i - 16): cave_raw + i]):
-            rp_off = i
-            break
-        i += 16
-    if rp_off is None:
-        raise RuntimeError('cleanup ext：找不到清道夫空间（需要 %d 字节）' % reaper_len)
-
-    # ============ 请求期生成桩（EAT -> 这里；一次性建线程） ============
-    buf = bytearray()
-    marks2 = {}
-    er32 = []
-
-    def e32(mk):
-        er32.append((len(buf), mk))
-        buf.extend(b'\x00' * 4)
-
-    def mark2(mk):
-        marks2[mk] = len(buf)
-
-    buf += bytes([0x60])
-    buf += bytes([0xE8, 0, 0, 0, 0])
-    anchor_rva = cave_rva + CLEANUP_EXT_STUB_OFF + len(buf)
-    buf += bytes([0x5B])
-    buf += bytes([0x80, 0xBB]) + struct.pack('<i', (cave_rva + CLEANUP_EXT_FLAG_OFF) - anchor_rva) + bytes([0x00])
-    buf += bytes([0x0F, 0x85]); e32('out')   # 已建过 -> 也必须走 popad
-    buf += bytes([0xC6, 0x83]) + struct.pack('<i', (cave_rva + CLEANUP_EXT_FLAG_OFF) - anchor_rva) + bytes([0x01])
-    buf += bytes([0x8B, 0xC3])
-    buf += bytes([0x2D]) + struct.pack('<I', anchor_rva)
-    buf += bytes([0x89, 0xC6])
-    buf += bytes([0x6A, 0x40])
-    buf += bytes([0x68, 0x00, 0x30, 0x00, 0x00])
-    buf += bytes([0x68, 0x00, 0x10, 0x00, 0x00])
-    buf += bytes([0x6A, 0x00])
-    buf += bytes([0xFF, 0x96]) + struct.pack('<I', IAT['VA'])
-    buf += bytes([0x85, 0xC0])
-    buf += bytes([0x0F, 0x84]); e32('out')
-    buf += bytes([0x89, 0xC7])
-    buf += bytes([0xB9]) + struct.pack('<I', reaper_len)
-    buf += bytes([0x8D, 0xB3]) + struct.pack('<i', (cave_rva + rp_off) - anchor_rva)
-    buf += bytes([0xF3, 0xA4])
-    buf += bytes([0x8B, 0xC3])
-    buf += bytes([0x2D]) + struct.pack('<I', anchor_rva)
-    buf += bytes([0x89, 0xC2])
-    buf += bytes([0x89, 0xF9])
-    buf += bytes([0x81, 0xE9]) + struct.pack('<I', reaper_len)
-    buf += bytes([0x89, 0x11])
-    buf += bytes([0xC7, 0x41, 0x04]) + struct.pack('<I', 0x100000)
-    for so, name in ((8, 'VQ'), (0xC, 'EnumW'), (0x10, 'GWL'), (0x14, 'SWL'),
-                     (0x18, 'DefWnd'), (0x1C, 'ExitThread'), (0x20, 'Sleep'), (0x24, 'GCN')):
-        buf += bytes([0x8B, 0x82]) + struct.pack('<I', IAT[name])
-        buf += bytes([0x89, 0x41, so])
-    buf += bytes([0x89, 0xC8])
-    buf += bytes([0x05]) + struct.pack('<I', 10 * 4)
-    buf += bytes([0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0x50, 0x6A, 0x00, 0x6A, 0x00])
-    buf += bytes([0xFF, 0x92]) + struct.pack('<I', IAT['CreateThread'])
-    mark2('out')
-    buf += bytes([0x61])
-    mark2('pass')
-    buf += bytes([0xE9]) + struct.pack('<i', (DPI_WRAP_IB + cave_rva + 0x170) - (st_va + len(buf) + 5))
-    for pos, mk in er32:
-        struct.pack_into('<i', buf, pos, marks2[mk] - (pos + 4))
-
-    if len(buf) > 0x100:
-        raise RuntimeError('cleanup ext：生成桩过长 %d' % len(buf))
-    if any(data[cave_raw + CLEANUP_EXT_STUB_OFF: cave_raw + CLEANUP_EXT_STUB_OFF + len(buf)]):
-        raise RuntimeError('cleanup ext：生成桩位置非空')
-    data[cave_raw + CLEANUP_EXT_STUB_OFF: cave_raw + CLEANUP_EXT_STUB_OFF + len(buf)] = buf
-    data[cave_raw + rp_off: cave_raw + rp_off + reaper_len] = rb
-    data[cave_raw + CLEANUP_EXT_FLAG_OFF] = 0
-
-    # EAT: request -> 生成桩；入口点保持原样（必须）
-    if _u32(data, opt + 16) != 0xAC704:
-        raise RuntimeError('cleanup ext：入口点意外被改 (0x%X)' % _u32(data, opt + 16))
-    ed_rva = _u32(data, opt + 96)
-    eo = rva_off(ed_rva)
-    nnam = _u32(data, eo + 24)
-    afn = _u32(data, eo + 28)
-    anm = _u32(data, eo + 32)
-    aord = _u32(data, eo + 36)
-    hit = False
-    for i in range(nnam):
-        no = rva_off(_u32(data, rva_off(anm) + 4 * i))
-        e2 = no
-        while data[e2] != 0:
-            e2 += 1
-        if bytes(data[no:e2]) == b'request':
-            ordi = _u16(data, rva_off(aord) + 2 * i)
-            sl2 = rva_off(afn) + 4 * ordi
-            cur = struct.unpack_from('<I', data, sl2)[0]
-            if cur != cave_rva + 0x170:
-                raise RuntimeError('cleanup ext：request 导出指向非预期 (0x%X)' % cur)
-            struct.pack_into('<I', data, sl2, cave_rva + CLEANUP_EXT_STUB_OFF)
-            hit = True
-    if not hit:
-        raise RuntimeError('cleanup ext：未找到 request 导出')
-    print('退出规避已应用: cleanup ext v29（请求期建清道夫线程；卸载后断过程）rp=0x%X len=%d' % (rp_off, reaper_len))
+    # —— 说明：不改导出表 EAT。SSP 经导出表调用到原入口 0xAA234，
+    #         再由上面的入口内联跳转进入存根（与验证版设计一致）。
+    print('退出崩溃修复层已应用: 存根+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
+          % (EXITFIX_STUB_OFF, EXITFIX_POST_OFF, EXITFIX_CB_OFF))
     return data
+
 
 def deploy_misaki(data: bytes, dst: str):
     """部署 misaki.dll：校验目标当前内容（只接受原始/本脚本历史版本），首次备份原文件。"""
@@ -2255,7 +2231,7 @@ if DPI_WRAP_ENABLE:
 data = patch_aitxt(data)
 
 
-data = patch_cleanup_ext(data)
+data = patch_exit_fix(data)
 
 os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:
