@@ -47,8 +47,7 @@ first.dll：
     - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
       窗口交给系统按屏幕缩放（含 GDI 自绘文字）；请求之外 SSP 自身界面不受影响。
     - 拖动修复：6 处 FormMouseMove 里 SC_DRAGMOVE 的 SendMessageA 调用改为经过
-      .cave 包装桩（拖动模态循环期间线程 GDISCALED），另有 6 处锚点坐标换算
-      （物理像素 → 96dpi 虚拟坐标）。
+      .cave 包装桩（拖动模态循环期间线程 GDISCALED）。
 
   状态栏重影修复（原版缺陷）：TStatusBar 的窗口类缺 CS_HREDRAW，拖动改变 Todo/Notify
     宽度时系统不做整窗失效、旧像素残留（文字重影）。在 TWinControl.CreateWnd 调用虚拟
@@ -1120,20 +1119,6 @@ DPI_DRAG_STUB_OFF = 0x2000    # 拖动包装桩（cave 扩到 0x2200 后的新�
 DPI_DRAG_SLOT_SM = 0x4B35A8   # SendMessageA 的 IAT 槽（VA）
 DPI_DRAG_CALL_ORIG = 0x406F2C  # 原调用目标（SendMessageA 跳板）
 DPI_DRAG_CALLS = (0x46326D, 0x46755E, 0x468C56, 0x46D615, 0x46EC75, 0x4704DE)
-DPI_GETDPI_STR = 0x34         # 数据区：+0x34 "GetDpiForWindow"
-DPI_GETDPI_SLOT = 0x30        # 数据区：+0x30 GDWF 指针
-DPI_GH_VA = 0x4380A4          # VCL GetHandle 辅助（eax=Self → eax=HWND）
-
-# 拖动锚点换算（现行做法）：拖动方法里固定的一段
-#   66 8B 55 08         mov dx, word [ebp+8]      ; X（客户区）
-#   66 8B 45 0C         mov ax, word [ebp+0xC]    ; Y
-#   E8 .. .. .. ..      call MAKELPARAM(0x407054)
-# 共 13 字节，替换为 call <cave 助手> + 8×NOP。助手按 96/GetDpiForWindow 把 (X,Y)
-# 换算成虚拟坐标并返回打包好的 lParam（物理像素→虚拟，修复判定/锚点空间不一致）。
-DPI_ANCHOR_ENABLE = True
-DPI_ANCHOR_HELPER_OFF = 0x2090
-DPI_ANCHOR_PATTERN = bytes.fromhex('66 8B 55 08 66 8B 45 0C E8')
-DPI_ANCHOR_MAKELPARAM = 0x407054
 def _build_drag_wrap_stub(stub_va, data_va):
     pset_va = data_va + DPI_WRAP_PSET
     str1_va = data_va + DPI_WRAP_USER32
@@ -1210,130 +1195,6 @@ def _build_drag_wrap_stub(stub_va, data_va):
     for pos, mk in rel:
         buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
     return bytes(buf)
-
-
-def _build_anchor_helper(stub_va, data_va):
-    """锚点换算助手：入口 ebp = 拖动方法帧（[ebp+8]=X 字、[ebp+0xC]=Y 字），
-    ebx = Self。返回 eax = lParam（虚拟客户区坐标打包）。换算失败时按原样返回。"""
-    gdwf_va = data_va + DPI_GETDPI_SLOT
-    str1_va = data_va + DPI_WRAP_USER32
-    str2_va = data_va + DPI_GETDPI_STR
-    gmh_va = DPI_WRAP_IAT_GMH
-    gpa_va = DPI_WRAP_IAT_GPA
-    buf = bytearray()
-    disp = []
-    rel = []
-    marks = {}
-
-    def d32(va):
-        disp.append((len(buf), va))
-        buf.extend(b'\x00' * 4)
-
-    def r8(mk):
-        rel.append((len(buf), mk))
-        buf.append(0)
-
-    def mark(mk):
-        marks[mk] = len(buf)
-
-    buf += b'\x57'                        # push edi
-    buf += b'\xE8\x00\x00\x00\x00'        # call $+5
-    base = stub_va + len(buf)             # pop edi 的 VA
-    buf += b'\x5F'                        # pop edi
-    buf += b'\x8B\x87'; d32(gdwf_va)      # mov eax,[edi+gdwf-base]
-    buf += b'\x85\xC0'
-    buf += b'\x75'; r8('have')
-    buf += b'\x8D\x87'; d32(str1_va)
-    buf += b'\x50'
-    buf += b'\xFF\x97'; d32(gmh_va)
-    buf += b'\x85\xC0'
-    buf += b'\x74'; r8('raw')
-    buf += b'\x50'
-    buf += b'\x8D\x87'; d32(str2_va)
-    buf += b'\x50'
-    buf += b'\xFF\x97'; d32(gpa_va)
-    buf += b'\x89\x87'; d32(gdwf_va)
-    mark('have')
-    buf += b'\x8B\x87'; d32(gdwf_va)
-    buf += b'\x85\xC0'
-    buf += b'\x74'; r8('raw')
-    buf += b'\x8B\xC3'                    # mov eax,ebx（Self）
-    buf += b'\x8D\x97'; d32(DPI_GH_VA)    # lea edx,[edi+gh-base]
-    buf += b'\xFF\xD2'                    # call edx → eax = hwnd
-    buf += b'\x50'
-    buf += b'\xFF\x97'; d32(gdwf_va)      # call [edi+gdwf-base] → eax = dpi
-    buf += b'\x85\xC0'
-    buf += b'\x74'; r8('raw')
-    buf += b'\x8B\xC8'                    # mov ecx,eax（dpi）
-    buf += b'\x0F\xB7\x45\x08'            # movzx eax, word [ebp+8]（X）
-    buf += b'\x6B\xC0\x60'                # imul eax,eax,96
-    buf += b'\x33\xD2'
-    buf += b'\xF7\xF1'                    # div ecx
-    buf += b'\x8B\xF8'                    # mov edi,eax（X'）
-    buf += b'\x0F\xB7\x45\x0C'            # movzx eax, word [ebp+0xC]（Y）
-    buf += b'\x6B\xC0\x60'
-    buf += b'\x33\xD2'
-    buf += b'\xF7\xF1'
-    buf += b'\xC1\xE0\x10'                # shl eax,16
-    buf += b'\x0B\xC7'                    # or eax,edi
-    buf += b'\x5F'                        # pop edi
-    buf += b'\xC3'
-    mark('raw')
-    buf += b'\x0F\xB7\x45\x08'            # movzx eax, word [ebp+8]
-    buf += b'\x0F\xB7\x55\x0C'            # movzx edx, word [ebp+0xC]
-    buf += b'\xC1\xE2\x10'                # shl edx,16
-    buf += b'\x0B\xC2'                    # or eax,edx
-    buf += b'\x5F'                        # pop edi
-    buf += b'\xC3'
-
-    for pos, va in disp:
-        struct.pack_into('<i', buf, pos, va - base)
-    for pos, mk in rel:
-        buf[pos] = (marks[mk] - (pos + 1)) & 0xFF
-    return bytes(buf)
-
-
-def patch_dpi_anchor(data: bytearray) -> bytearray:
-    e = _u32(data, 0x3C)
-    nsec = _u16(data, e + 6)
-    opt_size = _u16(data, e + 20)
-    opt = e + 24
-    sec = opt + opt_size
-    cave_rva = cave_raw = None
-    for i in range(nsec):
-        off = sec + 40 * i
-        if bytes(data[off:off + 5]) == b'.cave':
-            cave_rva = _u32(data, off + 12)
-            cave_raw = _u32(data, off + 20)
-    if cave_rva is None:
-        raise RuntimeError('锚点换算：找不到 .cave 节')
-    helper = _build_anchor_helper(DPI_WRAP_IB + cave_rva + DPI_ANCHOR_HELPER_OFF,
-                                  DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF)
-    if len(helper) > 0x100:
-        raise RuntimeError(f'锚点换算：助手过长 {len(helper)}')
-    if any(data[cave_raw + DPI_ANCHOR_HELPER_OFF:
-               cave_raw + DPI_ANCHOR_HELPER_OFF + len(helper)]):
-        raise RuntimeError('锚点换算：助手位置非空')
-    data[cave_raw + DPI_ANCHOR_HELPER_OFF:
-         cave_raw + DPI_ANCHOR_HELPER_OFF + len(helper)] = helper
-    helper_va = DPI_WRAP_IB + cave_rva + DPI_ANCHOR_HELPER_OFF
-    patched = 0
-    for site in DPI_DRAG_CALLS:
-        fo = site - 0x400C00
-        found = None
-        for k in range(fo, fo - 0x40, -1):
-            if bytes(data[k:k + 9]) == DPI_ANCHOR_PATTERN:
-                rel = struct.unpack_from('<i', data, k + 9)[0]
-                if (k + 0x400C00 + 13) + rel == DPI_ANCHOR_MAKELPARAM:
-                    found = k
-                    break
-        if found is None:
-            raise RuntimeError(f'锚点换算：0x{site:X} 附近找不到 MAKELPARAM 序列')
-        data[found:found + 13] = b'\xE8' + struct.pack(
-            '<i', helper_va - (found + 0x400C00 + 5)) + b'\x90' * 8
-        patched += 1
-    print(f'拖动锚点换算已应用: {patched} 处')
-    return data
 
 
 def patch_dpi_drag(data: bytearray) -> bytearray:
@@ -1588,12 +1449,9 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
     if set(found) != {'load', 'request'}:
         raise RuntimeError(f'DPI 包装：导出缺失 {found}')
 
-    # 数据区（PSET/GDWF 初始为 0）
+    # 数据区（PSET 初始为 0）
     blob = b'\x00' * 4 + b'user32.dll\x00' + b'\x00' * (DPI_WRAP_SETNAME - DPI_WRAP_USER32 - 11) \
         + b'SetThreadDpiAwarenessContext\x00'
-    blob += b'\x00' * (DPI_GETDPI_SLOT - len(blob))
-    blob += b'\x00' * 4
-    blob += b'GetDpiForWindow\x00'
     data[cave_raw + DPI_WRAP_DATA_OFF: cave_raw + DPI_WRAP_DATA_OFF + len(blob)] = blob
 
     targets = (('request', DPI_WRAP_REQ_OFF), ('load', DPI_WRAP_LOAD_OFF))
@@ -2238,9 +2096,6 @@ if DPI_WRAP_ENABLE:
     data = patch_dpi_wrap(data)
     # 信息窗拖动：SC_DRAGMOVE 的 SendMessage 包装
     data = patch_dpi_drag(data)
-    # 拖动坐标换算（物理像素 → 虚拟坐标）
-    if DPI_ANCHOR_ENABLE:
-        data = patch_dpi_anchor(data)
     # 系统字体初始化包装（状态栏提示字等系统字体取 96dpi 规格）
     if DPI_SYSFONT_ENABLE:
         data = patch_dpi_sysfont(data)
