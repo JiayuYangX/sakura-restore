@@ -12,7 +12,7 @@ first.dll：
     - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
       （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
     - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
-    - font：无长度前缀，用 \\x00 补齐
+    - font：无长度前缀，用 \x00 补齐
     - pchar：无长度前缀的 PChar 字面量（前面不是字符串头，禁写 off-4），
       只写内容+NUL，容量 = 原长+3
 
@@ -248,7 +248,6 @@ FLAG_OFF = 0x940                   # 输入框标志（dword：1=有 SSP 输入�
 MARK_OFF = 0x944                   # 视力游戏标记（1=已进入视力游戏）
 PENDING_OFF = 0x948                # 退出待处理字节（1=本次退出响应前置 CLOSE_CMD）
 GAMELEFT_OFF = 0x94C               # 游戏已退出字节（1=吞掉残留游戏事件响应）
-SWALLOW_OFF = 0x94D                # 本次响应待吞字节
 EYEBUSY_OFF = 0x94E                # 视力题已弹出字节（1=C图窗+输入框在 → 双击禁用）
 CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x960 / 数据@0x964）
 CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
@@ -932,7 +931,7 @@ def _build_dc_status_stub(rva):
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
     游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(0x3800)
+    blob = bytearray(0x2400)
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1022,7 +1021,7 @@ DPI_WRAP_USER32 = 0x04
 DPI_WRAP_SETNAME = 0x10
 DPI_WRAP_IB = 0x400000        # 映像首选基址
 DPI_WRAP_ENABLE = True        # 总开关：出问题改 False 重建即可回到普通构建
-def _build_dpi_wrap_stub(stub_va, data_va, target_va, insert_font_call=False):
+def _build_dpi_wrap_stub(stub_va, data_va, target_va):
     """位置无关的导出包装桩（stub/data/target 均为首选基址下的 VA）。"""
     pset_va = data_va + DPI_WRAP_PSET
     str1_va = data_va + DPI_WRAP_USER32
@@ -1066,8 +1065,9 @@ def _build_dpi_wrap_stub(stub_va, data_va, target_va, insert_font_call=False):
     buf += b'\x74'; r8('noctx')           # je .noctx
     buf += b'\x89\x83'; d32(pset_va)      # mov [ebx+pset-base],eax
     mark('ctx')
+    buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
     buf += b'\x6A\xFB'                    # push -5（UNAWARE_GDISCALED）
-    buf += b'\xFF\x93'; d32(pset_va)      # call [ebx+pset-base]（省 2 字节）
+    buf += b'\xFF\xD0'                    # call eax
     buf += b'\x50'                        # push eax（旧上下文）
     buf += b'\xFF\x74\x24\x14'            # push [esp+0x14]（len 副本）
     buf += b'\xFF\x74\x24\x14'            # push [esp+0x14]（h 副本）
@@ -1081,11 +1081,6 @@ def _build_dpi_wrap_stub(stub_va, data_va, target_va, insert_font_call=False):
     buf += b'\xFF\x93'; d32(pset_va)      # call [ebx+pset-base] PSET(旧)
     buf += b'\x5A\x58'                    # pop edx ; pop eax
     buf += b'\x59'                        # pop ecx（丢弃旧上下文槽）
-    if insert_font_call and IME_FOCUS_DPI_ENABLE:
-        # 请求返回后跑一遍修正例程（内含"请求末安全化"）：对象若在请求里被释放，
-        # 幽灵遗留下的坏窗口过程会被立刻修掉，SSP 后续广播/迟到消息就安全了。
-        _fv = (data_va - DPI_WRAP_DATA_OFF) + IME_FONT_STUB_OFF
-        buf += b'\xE8' + struct.pack('<i', _fv - (stub_va + len(buf) + 5))
     buf += b'\x5E\x5B'                    # pop esi ; pop ebx
     buf += b'\xC3'                        # ret（调用方清栈）
     mark('noctx')
@@ -1533,652 +1528,6 @@ def patch_createparams_hredraw(data: bytearray) -> bytearray:
     return data
 
 
-# 输入法组字修复：
-#  1) 字体：组字窗用输入框的"逻辑字体"（96dpi）在 aware 窗口里按物理像素画 → 字小一号；
-#  2) 位置：组字窗按"虚拟坐标"定位（正确位置 ÷ 1.5）→ 横向偏移、挡住文字。
-# VCL 类窗口过程收不到消息（被实例过程接管），所以借用"每次脚本请求都会经过"的
-# request 导出包装：在其入口调用本修复例程——取当前焦点窗口，把该窗口 IME 上下文的
-# 组字字体按 真实DPI/96 放大（ImmSetCompositionFontA），并把光标客户端坐标同样放大后
-# 写入 COMPOSITIONFORM（ImmSetCompositionWindow）。例程自保全部寄存器（pushad），
-# 不改线程上下文，无副作用。
-IME_FOCUS_DPI_ENABLE = True
-IME_SUB_ENABLE = False           # 子类化实验停用：退出时可能转发到已释放的 VCL thunk 导致崩溃
-IME_TIMER_ENABLE = False        # 50ms 定时器实验停用：退出时队列残留会派发到已卸载代码
-IME_FONT_STUB_OFF = 0x2400      # 修复例程（cave 扩到 0x2A00 后的新区）
-IME_FONT_CF_OFF = 0x3500        # COMPOSITIONFORM 缓冲（28 字节）
-IME_FONT_SCRATCH_OFF = 0x3540   # 暂存区（0xA0）
-IME_FONT_STR_OFF = 0x3600       # 字符串区
-IME_TIMERPROC_OFF = 0x2960      # 50ms 定时器回调（高频修复，消除闪烁）
-IME_CLEANUP_STUB_OFF = 0x2980   # 幽灵卸载清理桩（KillTimer，防野指针）
-IME_CLEANUP_SITE = 0x43C684     # 幽灵卸载初始化例程入口
-IME_CLEANUP_ORIG = bytes.fromhex('A1 7C E0 4A 00')   # mov eax,[0x4AE07C]
-IME_CLEANUP_NEXT = 0x43C689     # 补完后继续处
-S_HWND, S_HIMC = 0x04, 0x00
-S_HDC, S_DPI, S_IMM = 0x08, 0x0C, 0x10
-S_GETCTX, S_SETFONT, S_RELCTX = 0x14, 0x18, 0x1C
-S_LF = 0x20
-S_SETWIN, S_GETCARET = 0x5C, 0x60
-S_CNT_CALL, S_CNT_HWND = 0x64, 0x68
-S_GETOBJRC, S_SETRC, S_SETWINRC, S_CFX, S_CFY = 0x6C, 0x70, 0x74, 0x78, 0x7C
-S_TIMER_ID = 0x98               # SetTimer 返回的定时器 id（0=未装）
-S_CAND_N, S_CAND_D = 0x80, 0x84           # 候选框位置缩放系数（运行中可热调）
-S_SETCAND, S_CANDRC, S_CANDX, S_CANDY = 0x88, 0x8C, 0x90, 0x94
-IAT_GETFOCUS = 0x4B36D0
-IAT_GMH = 0x4B31E4
-IAT_LOADLIB = 0x4B3324
-IAT_GPA = 0x4B3370
-IAT_SM = 0x4B35A8
-IAT_GETOBJ = 0x4B349C
-IAT_GETDC = 0x4B36DC
-IAT_DEVCAPS = 0x4B34AC
-IAT_RELDC = 0x4B35BC
-IAT_SETTIMER = 0x4B356C
-IAT_KILLTIMER = 0x4B3618
-IME_FONT_STRS = (b'imm32.dll\x00', b'ImmGetContext\x00',
-                 b'ImmSetCompositionFontA\x00', b'ImmReleaseContext\x00',
-                 b'ImmSetCompositionWindow\x00', b'user32.dll\x00', b'GetCaretPos\x00',
-                 b'ImmSetCandidateWindow\x00')
-
-
-def _build_ime_font_stub(stub_va, scr_va, str_va, cf_va, timerproc_va):
-    def S(x):
-        return scr_va + x
-
-
-    str_pos = []
-    str_off = 0
-    for s in IME_FONT_STRS:
-        str_pos.append(str_va + str_off)
-        str_off += len(s)
-    s_imm, s_get, s_set, s_rel, s_setwin, s_u32, s_caret, s_cand = str_pos
-
-    buf = bytearray()
-    disp = []
-    rel8 = []
-    rel32 = []
-    marks = {}
-
-    def d32(va):
-        disp.append((len(buf), va))
-        buf.extend(b'\x00' * 4)
-
-    def r8(mk):
-        rel8.append((len(buf), mk))
-        buf.append(0)
-
-    def r32(mk):
-        rel32.append((len(buf), mk))
-        buf.extend(b'\x00' * 4)
-
-    def mark(mk):
-        marks[mk] = len(buf)
-
-    buf += b'\x60'                          # pushad（保护全部寄存器）
-    buf += b'\xE8\x00\x00\x00\x00'          # call $+5
-    base = stub_va + len(buf)
-    buf += b'\x5B'                          # pop ebx
-    buf += b'\xFF\x83'; d32(S(S_CNT_CALL))  # inc dword [cnt_call]
-    # 每次请求做一遍"轻量安全化"（模式2）：把 TPUtilWindow 的类过程从本 DLL 的
-    # DefWindowProcA 导入跳转桩改成真正的 DefWindowProcA——活动窗口用实例过程不受影响，
-    # 退出收尾一旦丢失实例过程回落到类过程时也不会踩到已卸载的 DLL。只修类名与桥窗口。
-    _post = cf_va - IME_FONT_CF_OFF + POST_STUB_OFF
-    buf += bytes([0x6A, 0x02])              # push 2（模式）
-    buf += bytes([0xE8]) + struct.pack('<i', _post - (stub_va + len(buf) + 5))
-    buf += bytes([0x59])                    # pop ecx（清理模式参数）
-    if IME_TIMER_ENABLE:
-        buf += b'\x83\xBB'; d32(S(S_TIMER_ID)); buf += b'\x00'   # cmp dword [timer_id],0
-        buf += b'\x75'; r8('tmrok')            # jne .tmrok
-        buf += b'\x8D\x83'; d32(timerproc_va); buf += b'\x50'    # lea eax,[timerproc]; push
-        buf += b'\x6A\x32'                    # push 50
-        buf += b'\x6A\x00'                    # push 0
-        buf += b'\x6A\x00'                    # push 0（hWnd=NULL）
-        buf += b'\xFF\x93'; d32(IAT_SETTIMER) # call [SetTimer]
-        buf += b'\x89\x83'; d32(S(S_TIMER_ID))# mov [timer_id],eax
-        mark('tmrok')
-    buf += b'\xFF\x93'; d32(IAT_GETFOCUS)   # call [GetFocus]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('ret')          # jz .ret
-    buf += b'\x89\x83'; d32(S(S_HWND))      # mov [hwnd],eax
-    buf += b'\xFF\x83'; d32(S(S_CNT_HWND))  # inc dword [cnt_hwnd]
-    # ---- imm32 函数解析 ----
-    buf += b'\x8B\x83'; d32(S(S_IMM))       # mov eax,[imm]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x85'; r32('immok')        # jnz .immok
-    buf += b'\x8D\x83'; d32(s_imm); buf += b'\x50'
-    buf += b'\xFF\x93'; d32(IAT_LOADLIB)    # call [LoadLibraryA]
-    buf += b'\x89\x83'; d32(S(S_IMM))       # mov [imm],eax
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('ret')          # jz .ret
-    for s_va, slot in ((s_get, S_GETCTX), (s_set, S_SETFONT), (s_rel, S_RELCTX), (s_setwin, S_SETWIN), (s_cand, S_SETCAND)):
-        buf += b'\x8D\x83'; d32(s_va); buf += b'\x50'
-        buf += b'\x8B\x83'; d32(S(S_IMM)); buf += b'\x50'
-        buf += b'\xFF\x93'; d32(IAT_GPA)    # call [GetProcAddress]
-        buf += b'\x89\x83'; d32(S(slot))    # mov [slot],eax
-        buf += b'\x85\xC0'                  # test eax,eax
-        buf += b'\x0F\x84'; r32('ret')      # jz .ret
-    mark('immok')
-    mark('insdone')
-    # ---- user32 GetCaretPos 解析 ----
-    buf += b'\x8B\x83'; d32(S(S_GETCARET))  # mov eax,[caret]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x85'; r32('caretok')      # jnz .caretok
-    buf += b'\x8D\x83'; d32(s_u32); buf += b'\x50'
-    buf += b'\xFF\x93'; d32(IAT_GMH)        # call [GetModuleHandleA]（user32 必已加载）
-    buf += b'\x8B\xF0'                      # mov esi,eax
-    buf += b'\x85\xF6'                      # test esi,esi
-    buf += b'\x0F\x84'; r32('rel')               # jz .rel
-    buf += b'\x8D\x83'; d32(s_caret); buf += b'\x50'
-    buf += b'\x56'                          # push esi
-    buf += b'\xFF\x93'; d32(IAT_GPA)        # call [GetProcAddress]
-    buf += b'\x89\x83'; d32(S(S_GETCARET))  # mov [caret],eax
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('rel')               # jz .rel
-    mark('caretok')
-    # ---- 组字字体 ----
-    buf += b'\xFF\xB3'; d32(S(S_HWND))      # push dword [hwnd]
-    buf += b'\xFF\x93'; d32(S(S_GETCTX))    # call [ImmGetContext]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('ret')          # jz .ret
-    buf += b'\x89\x83'; d32(S(S_HIMC))      # mov [hIMC],eax
-    buf += b'\x6A\x00'                      # push 0
-    buf += b'\x6A\x00'                      # push 0
-    buf += b'\x6A\x31'                      # push 0x31（WM_GETFONT）
-    buf += b'\xFF\xB3'; d32(S(S_HWND))      # push [hwnd]
-    buf += b'\xFF\x93'; d32(IAT_SM)         # call [SendMessageA]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('rel')          # jz .rel
-    buf += b'\x8D\x93'; d32(S(S_LF))        # lea edx,[lf]
-    buf += b'\x52'                          # push edx
-    buf += b'\x6A\x3C'                      # push 60
-    buf += b'\x50'                          # push eax
-    buf += b'\xFF\x93'; d32(IAT_GETOBJ)     # call [GetObjectA]
-    buf += b'\x89\x83'; d32(S(S_GETOBJRC))  # mov [getobjrc],eax
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('rel')          # jz .rel
-    buf += b'\x6A\x00'                      # push 0
-    buf += b'\xFF\x93'; d32(IAT_GETDC)      # call [GetDC]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('rel')          # jz .rel
-    buf += b'\x89\x83'; d32(S(S_HDC))       # mov [hdc],eax
-    buf += b'\x6A\x5A'                      # push 90（LOGPIXELSY）
-    buf += b'\x50'                          # push eax
-    buf += b'\xFF\x93'; d32(IAT_DEVCAPS)    # call [GetDeviceCaps]
-    buf += b'\x89\x83'; d32(S(S_DPI))       # mov [dpi],eax
-    buf += b'\x8B\x83'; d32(S(S_LF))        # mov eax,[lfHeight]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x74'; r8('nh')                # jz .nh
-    buf += b'\xF7\xAB'; d32(S(S_DPI))       # imul dword [dpi]
-    buf += b'\xB9\x60\x00\x00\x00'          # mov ecx,96
-    buf += b'\xF7\xF9'                      # idiv ecx
-    buf += b'\x89\x83'; d32(S(S_LF))        # mov [lfHeight],eax
-    mark('nh')
-    buf += b'\x8B\x83'; d32(S(S_LF + 4))    # mov eax,[lfWidth]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x74'; r8('nw')                # jz .nw
-    buf += b'\xF7\xAB'; d32(S(S_DPI))       # imul dword [dpi]
-    buf += b'\xB9\x60\x00\x00\x00'          # mov ecx,96
-    buf += b'\xF7\xF9'                      # idiv ecx
-    buf += b'\x89\x83'; d32(S(S_LF + 4))    # mov [lfWidth],eax
-    mark('nw')
-    buf += b'\x8D\x83'; d32(S(S_LF)); buf += b'\x50'
-    buf += b'\x8B\x83'; d32(S(S_HIMC)); buf += b'\x50'
-    buf += b'\xFF\x93'; d32(S(S_SETFONT))   # call [ImmSetCompositionFontA]
-    buf += b'\x89\x83'; d32(S(S_SETRC))     # mov [setrc],eax
-    # ---- 组字窗/候选框位置（GetCaretPos → 分别写两个表单）----
-    buf += b'\x8D\x93'; d32(cf_va + 40)      # lea edx,[cand.ptCurrentPos]（cand@cf+32，pt@+8）
-    buf += b'\x52'                          # push edx
-    buf += b'\xFF\x93'; d32(S(S_GETCARET))  # call [GetCaretPos]
-    buf += b'\x85\xC0'                      # test eax,eax
-    buf += b'\x0F\x84'; r32('nocf')         # jz .nocf
-    # 组字表单：原始光标 × dpi/96
-    buf += b'\x8B\x83'; d32(cf_va + 40)     # mov eax,[cand.x]（原始）
-    buf += b'\xF7\xAB'; d32(S(S_DPI))       # imul dword [dpi]
-    buf += b'\xB9\x60\x00\x00\x00'          # mov ecx,96
-    buf += b'\xF7\xF9'                      # idiv ecx
-    buf += b'\x89\x83'; d32(cf_va + 4)      # mov [cf.x],eax
-    buf += b'\x8B\x83'; d32(cf_va + 44)     # mov eax,[cand.y]（原始）
-    buf += b'\xF7\xAB'; d32(S(S_DPI))       # imul dword [dpi]
-    buf += b'\xB9\x60\x00\x00\x00'          # mov ecx,96
-    buf += b'\xF7\xF9'                      # idiv ecx
-    buf += b'\x89\x83'; d32(cf_va + 8)      # mov [cf.y],eax
-    buf += b'\xC7\x83'; d32(cf_va); buf += b'\x02\x00\x00\x00'   # mov dword [cf],CFS_POINT
-    # 候选框缩放系数默认 1/1（运行中可热调）
-    buf += b'\x83\xBB'; d32(S(S_CAND_D)); buf += b'\x00'   # cmp dword [cand_d],0
-    buf += b'\x75'; r8('canddef')           # jne .canddef
-    buf += b'\xC7\x83'; d32(S(S_CAND_N)); buf += b'\x01\x00\x00\x00'
-    buf += b'\xC7\x83'; d32(S(S_CAND_D)); buf += b'\x01\x00\x00\x00'
-    mark('canddef')
-    # 候选框表单：原始光标 × n/d
-    buf += b'\x8B\x83'; d32(cf_va + 40)     # mov eax,[cand.x]
-    buf += b'\xF7\xAB'; d32(S(S_CAND_N))    # imul dword [cand_n]
-    buf += b'\xF7\xBB'; d32(S(S_CAND_D))    # idiv dword [cand_d]
-    buf += b'\x89\x83'; d32(cf_va + 40)     # mov [cand.x],eax
-    buf += b'\x8B\x83'; d32(cf_va + 44)     # mov eax,[cand.y]
-    buf += b'\xF7\xAB'; d32(S(S_CAND_N))    # imul
-    buf += b'\xF7\xBB'; d32(S(S_CAND_D))    # idiv
-    buf += b'\x89\x83'; d32(cf_va + 44)     # mov [cand.y],eax
-    buf += b'\xC7\x83'; d32(cf_va + 36); buf += b'\x40\x00\x00\x00'  # mov dword [cand.dwStyle],CFS_CANDIDATEPOS
-    buf += b'\x8D\x83'; d32(cf_va + 32); buf += b'\x50'      # push &cand
-    buf += b'\x8B\x83'; d32(S(S_HIMC)); buf += b'\x50'
-    buf += b'\xFF\x93'; d32(S(S_SETCAND))   # call [ImmSetCandidateWindow]
-    buf += b'\x89\x83'; d32(S(S_CANDRC))    # mov [candrc],eax
-    buf += b'\x8D\x83'; d32(cf_va); buf += b'\x50'          # push &cf
-    buf += b'\x8B\x83'; d32(S(S_HIMC)); buf += b'\x50'
-    buf += b'\xFF\x93'; d32(S(S_SETWIN))    # call [ImmSetCompositionWindow]
-    buf += b'\x89\x83'; d32(S(S_SETWINRC))  # mov [setwinrc],eax
-    buf += b'\x8B\x83'; d32(cf_va + 4)      # mov eax,[cf.x]
-    buf += b'\x89\x83'; d32(S(S_CFX))       # mov [cfx],eax
-    buf += b'\x8B\x83'; d32(cf_va + 8)      # mov eax,[cf.y]
-    buf += b'\x89\x83'; d32(S(S_CFY))       # mov [cfy],eax
-    buf += b'\x8B\x83'; d32(cf_va + 40)     # mov eax,[cand.x]
-    buf += b'\x89\x83'; d32(S(S_CANDX))     # mov [candx],eax
-    buf += b'\x8B\x83'; d32(cf_va + 44)     # mov eax,[cand.y]
-    buf += b'\x89\x83'; d32(S(S_CANDY))     # mov [candy],eax
-    mark('nocf')
-    buf += b'\x8B\x83'; d32(S(S_HDC)); buf += b'\x50'
-    buf += b'\x6A\x00'                      # push 0
-    buf += b'\xFF\x93'; d32(IAT_RELDC)      # call [ReleaseDC]
-    mark('rel')
-    buf += b'\x8B\x83'; d32(S(S_HIMC)); buf += b'\x50'
-    buf += b'\xFF\xB3'; d32(S(S_HWND))      # push [hwnd]
-    buf += b'\xFF\x93'; d32(S(S_RELCTX))    # call [ImmReleaseContext]
-    mark('instdone')
-    mark('ret')
-    buf += b'\x61'                          # popad
-    buf += b'\xC3'                          # ret
-
-    for pos, va in disp:
-        struct.pack_into('<i', buf, pos, va - base)
-    for pos, mk in rel8:
-        d = marks[mk] - (pos + 1)
-        if not -128 <= d <= 127:
-            raise RuntimeError(f'IME 例程短跳超出范围: {d}')
-        buf[pos] = d & 0xFF
-    for pos, mk in rel32:
-        struct.pack_into('<i', buf, pos, marks[mk] - (pos + 4))
-    return bytes(buf)
-
-
-def _build_timerproc_stub(stub_va, fix_va):
-    """50ms 线程定时器回调：调用修复例程后返回（TimerProc 是 stdcall）。"""
-    buf = bytearray()
-    buf += b'\x60'                                  # pushad
-    buf += b'\xE8' + struct.pack('<i', fix_va - (stub_va + len(buf) + 5))  # call fix
-    buf += b'\x61'                                  # popad
-    buf += b'\x33\xC0'                             # xor eax,eax
-    buf += b'\xC2\x10\x00'                        # ret 0x10
-    return bytes(buf)
-
-
-def _build_cleanup_stub(stub_va, scr_va):
-    """幽灵卸载清理桩：KillTimer，然后补回原指令并跳回。"""
-    buf = bytearray()
-    disp = []
-    rel8 = []
-
-    def d32(va):
-        disp.append((len(buf), va))
-        buf.extend(b'\x00' * 4)
-
-    def r8(mk):
-        rel8.append((len(buf), mk))
-        buf.append(0)
-
-    buf += b'\x53'                                  # push ebx
-    buf += b'\xE8\x00\x00\x00\x00'              # call $+5
-    base = stub_va + len(buf)
-    buf += b'\x5B'                                  # pop ebx
-    buf += b'\x8B\x8B'; d32(scr_va + S_TIMER_ID)   # mov ecx,[timer_id]
-    buf += b'\x85\xC9'                             # test ecx,ecx
-    buf += b'\x74'; r8('skip')                      # jz .skip
-    buf += b'\x51'                                  # push ecx
-    buf += b'\x6A\x00'                             # push 0
-    buf += b'\xFF\x93'; d32(IAT_KILLTIMER)         # call [KillTimer]
-    buf += b'\xC7\x83'; d32(scr_va + S_TIMER_ID); buf += b'\x00\x00\x00\x00'  # mov dword [timer_id],0
-    mark = len(buf)
-    buf += b'\x8B\x83'; d32(0x4AE07C)              # mov eax,[ebx+(0x4AE07C-base)]（补回原指令）
-    buf += b'\x5B'                                  # pop ebx
-    buf += b'\xE9' + struct.pack('<i', IME_CLEANUP_NEXT - (stub_va + len(buf) + 5))  # jmp 0x43C689
-    for pos, va in disp:
-        struct.pack_into('<i', buf, pos, va - base)
-    for pos, mk in rel8:
-        d = mark - (pos + 1)
-        if not -128 <= d <= 127:
-            raise RuntimeError('清理桩短跳超出范围')
-        buf[pos] = d & 0xFF
-    return bytes(buf)
-
-
-
-
-def patch_ime_focus_dpi(data: bytearray) -> bytearray:
-    """写入输入法组字修复例程 + 50ms 定时器 + 卸载清理桩。"""
-    e = _u32(data, 0x3C)
-    nsec = _u16(data, e + 6)
-    opt_size = _u16(data, e + 20)
-    opt = e + 24
-    sec = opt + opt_size
-    cave_rva = cave_raw = None
-    for i in range(nsec):
-        off = sec + 40 * i
-        if bytes(data[off:off + 5]) == b'.cave':
-            cave_rva = _u32(data, off + 12)
-            cave_raw = _u32(data, off + 20)
-    if cave_rva is None:
-        raise RuntimeError('输入法字体：找不到 .cave 节')
-    cave_va = DPI_WRAP_IB + cave_rva
-    stub_va = cave_va + IME_FONT_STUB_OFF
-    cf_va = cave_va + IME_FONT_CF_OFF
-    timer_va = cave_va + IME_TIMERPROC_OFF
-    clean_va = cave_va + IME_CLEANUP_STUB_OFF
-    scr_va = cave_va + IME_FONT_SCRATCH_OFF
-    str_va = cave_va + IME_FONT_STR_OFF
-    stub = _build_ime_font_stub(stub_va, scr_va, str_va, cf_va, timer_va)
-    strs = b''.join(IME_FONT_STRS)
-    if IME_TIMER_ENABLE:
-        timer = _build_timerproc_stub(timer_va, stub_va)
-        clean = _build_cleanup_stub(clean_va, scr_va)
-    else:
-        timer = b''
-        clean = b''
-    if len(stub) > IME_FONT_CF_OFF - IME_FONT_STUB_OFF:
-        raise RuntimeError('输入法字体：例程过长')
-    reg_end = IME_FONT_STR_OFF + len(strs)
-    if IME_TIMER_ENABLE:
-        reg_end = max(reg_end, IME_TIMERPROC_OFF + len(timer), IME_CLEANUP_STUB_OFF + len(clean))
-    if any(data[cave_raw + IME_FONT_STUB_OFF: cave_raw + reg_end]):
-        raise RuntimeError('输入法字体：例程/数据位置非空')
-    data[cave_raw + IME_FONT_STUB_OFF: cave_raw + IME_FONT_STUB_OFF + len(stub)] = stub
-    data[cave_raw + IME_FONT_STR_OFF: cave_raw + IME_FONT_STR_OFF + len(strs)] = strs
-    if IME_TIMER_ENABLE:
-        data[cave_raw + IME_TIMERPROC_OFF: cave_raw + IME_TIMERPROC_OFF + len(timer)] = timer
-        data[cave_raw + IME_CLEANUP_STUB_OFF: cave_raw + IME_CLEANUP_STUB_OFF + len(clean)] = clean
-        fo = IME_CLEANUP_SITE - 0x400C00
-        if bytes(data[fo:fo + 5]) != IME_CLEANUP_ORIG:
-            raise RuntimeError(f'输入法字体：0x{IME_CLEANUP_SITE:X} 原始字节不符')
-        data[fo:fo + 5] = b'\xE9' + struct.pack('<i', clean_va - (IME_CLEANUP_SITE + 5))
-    print('输入法修复已应用: 组字字体/位置（由 request 包装驱动）')
-    return data
-
-
-# 退出崩溃规避：SSP 关闭流程里，幽灵对象销毁后消息泵仍会向幽灵窗口派发排队消息
-# （WM_TIMER 等），直接踩已释放的 VCL 对象 → AV。包装幽灵的 unload 导出：在原流程
-# 前后各做一遍"窗口安全化"——凡是过程为 VCL 堆 thunk、且方法代码在 first.dll 内的
-# 顶层窗口，统一把过程换成 DefWindowProcA，迟到的消息便不再进入 VCL 方法。
-UNLOAD_WRAP_ENABLE = True
-UNLOAD_STUB_OFF = 0x3340
-UNLOAD_ORIG_RVA = 0xAA234
-POST_STUB_OFF = 0x2C80         # 窗口安全化桩（EnumWindows）
-POST_CB_OFF = 0x2D20           # 安全化回调
-IAT_SM = 0x4B35A8
-IAT_ENUMWINDOWS = 0x4B3714
-IAT_GETWINLONG2 = 0x4B3664
-IAT_SETWINLONG2 = 0x4B3568
-IAT_DEFWNDPROC = 0x4B3764
-IAT_GETCLASSNAMEA = 0x4B36F0
-IAT_SETCLASSLONGA = 0x4B359C
-CLASS_BUF_OFF = 0x2F00         # GetClassNameA 缓冲（32 字节；必须在回调代码之后！）
-BRIDGE_RVA = 0x47474           # 方法桥 RVA（proc - 模块基址 == 此值 → 也是坏过程）
-
-
-def _build_post_stub(stub_va, cb_va):
-    """窗口安全化桩：EnumWindows 遍历所有顶层窗口。
-    调用方先 push 模式（0=只修"过程=桥"窗口；1=同时修 VCL thunk 窗口），桩自行弹出。"""
-    import struct as _st
-    buf = bytearray()
-    disp = []
-    buf += bytes([0x8B, 0x44, 0x24, 0x04])     # mov eax,[esp+4]（模式；[esp]=返回地址）
-    buf += bytes([0x60])                       # pushad
-    buf += bytes([0xE8, 0, 0, 0, 0])           # call $+5
-    base = stub_va + len(buf)
-    buf += bytes([0x5B])                       # pop ebx
-    buf += bytes([0x50])                       # push eax（lParam=模式）
-    buf += bytes([0x8D, 0x93])
-    disp.append((len(buf), cb_va))             # lea edx,[cb]
-    buf.extend(b'\x00' * 4)
-    buf += bytes([0x52])                       # push edx
-    buf += bytes([0xFF, 0x93])
-    disp.append((len(buf), IAT_ENUMWINDOWS))   # call [EnumWindows]
-    buf.extend(b'\x00' * 4)
-    buf += bytes([0x61])                       # popad
-    buf += bytes([0xC3])                       # ret
-    for pos, va in disp:
-        _st.pack_into('<i', buf, pos, va - base)
-    return bytes(buf)
-
-
-def _build_post_cb(stub_va):
-    """回调：把坏窗口过程改成 DefWindowProcA——
-    ⓪ 类名 TPUtilWindow（VCL 定时器/隐藏窗）：类过程与实例过程一起换掉。
-       退出时幽灵的定时器窗在收尾中会失去实例过程而回落到 first.dll 的类过程，
-       SSP 的 "Sakura" 广播打到它就会崩；提前换掉这条路径。
-    ① proc == 方法桥（模块基址+0x47474）→ 半销毁窗口。
-    ② VCL 堆 thunk：thunk[5] 的方法代码不在 first.dll CODE 内（已被释放/回收）。
-    ③ 模式 1（卸载后）时，所有 VCL thunk 窗口都换（此后任何迟到消息都不再进入 VCL）。"""
-    import struct as _st
-    buf = bytearray()
-    disp = []
-    rel8 = []
-    marks = {}
-
-    def d32(va):
-        disp.append((len(buf), va))
-        buf.extend(b'\x00' * 4)
-
-    def r8(mk):
-        rel8.append((len(buf), mk))
-        buf.append(0)
-
-    def mark(mk):
-        marks[mk] = len(buf)
-
-    def neutral():
-        buf.extend(bytes([0xFF, 0xB3])); d32(IAT_DEFWNDPROC)    # push dword [DefWindowProcA 槽]
-        buf.extend(bytes([0x6A, 0xFC]))                         # push -4
-        buf.extend(bytes([0x56]))                               # push esi
-        buf.extend(bytes([0xFF, 0x93])); d32(IAT_SETWINLONG2)   # call [SetWindowLongA]
-
-    buf += bytes([0x60])                       # pushad
-    buf += bytes([0xE8, 0, 0, 0, 0])           # call $+5
-    base = stub_va + len(buf)
-    buf += bytes([0x5B])                       # pop ebx
-    # edi = 模块基址
-    buf += bytes([0x8B, 0xFB])                 # mov edi,ebx
-    buf += bytes([0x81, 0xEF])                 # sub edi, imm32（pop 处 preferred - 0x400000）
-    buf.extend(_st.pack('<i', base - 0x400000))
-    # esi = hwnd（pushad 后 [esp+0x24] = 第一个参数）
-    buf += bytes([0x8B, 0x74, 0x24, 0x24])     # mov esi,[esp+0x24]
-    # ---- ⓪ 类名 TPUtilWindow？----
-    util_va = stub_va - POST_CB_OFF + CLASS_BUF_OFF
-    buf += bytes([0x6A, 0x20])                 # push 32
-    buf += bytes([0x8D, 0x93]); d32(util_va)   # lea edx,[classbuf]
-    buf += bytes([0x52])                       # push edx
-    buf += bytes([0x56])                       # push esi
-    buf += bytes([0xFF, 0x93]); d32(IAT_GETCLASSNAMEA)     # call [GetClassNameA]
-    buf += bytes([0x8D, 0x93]); d32(util_va)   # lea edx,[classbuf]
-    buf += bytes([0x81, 0x3A]); buf += _st.pack('<i', 0x74555054)  # cmp dword [edx],'TPUt'
-    buf += bytes([0x75]); r8('notutil')        # jne .notutil
-    buf += bytes([0x81, 0x7A, 0x04]); buf += _st.pack('<i', 0x69576C69)  # cmp [edx+4],'ilWi'
-    buf += bytes([0x75]); r8('notutil')
-    buf += bytes([0x81, 0x7A, 0x08]); buf += _st.pack('<i', 0x776F646E)  # cmp [edx+8],'ndow'
-    buf += bytes([0x75]); r8('notutil')
-    buf += bytes([0x80, 0x7A, 0x0C, 0x00])     # cmp byte [edx+0xC],0
-    buf += bytes([0x75]); r8('notutil')
-    # 类过程 -> DefWindowProcA
-    buf += bytes([0xFF, 0xB3]); d32(IAT_DEFWNDPROC)        # push [DefWindowProcA]
-    buf += bytes([0x6A, 0xE8])                 # push -24（GCLP_WNDPROC）
-    buf += bytes([0x56])                       # push esi
-    buf += bytes([0xFF, 0x93]); d32(IAT_SETCLASSLONGA)     # call [SetClassLongA]
-    buf += bytes([0x83, 0x7C, 0x24, 0x28, 0x02])   # cmp dword [esp+0x28],2
-    buf += bytes([0x75]); r8('nut2')           # jne .nut2（模式0/1：实例过程也直接换掉）
-    # 模式2：仅当实例过程是"坏 thunk"（方法代码既不在 first.dll 也不在 ssp.exe 范围）才换
-    buf += bytes([0x6A, 0xFC, 0x56])           # push -4 ; push esi
-    buf += bytes([0xFF, 0x93]); d32(IAT_GETWINLONG2)   # call [GetWindowLongA]
-    buf += bytes([0x85, 0xC0])                 # test eax,eax
-    buf += bytes([0x74]); r8('skip')           # jz .skip
-    buf += bytes([0x80, 0x38, 0xE8])           # cmp byte [eax],0xE8
-    buf += bytes([0x75]); r8('skip')           # jne .skip
-    buf += bytes([0x8B, 0x50, 0x05])           # mov edx,[eax+5]（方法代码）
-    buf += bytes([0x89, 0xD1])                 # mov ecx,edx
-    buf += bytes([0x2B, 0xD7])                 # sub edx,edi
-    buf += bytes([0x81, 0xFA]); buf += _st.pack('<i', 0xB0000)  # cmp edx,0xB0000
-    buf += bytes([0x72]); r8('skip')           # jb .skip（在 first.dll 内 → 健康）
-    buf += bytes([0x81, 0xE9]); buf += _st.pack('<i', 0x400000) # sub ecx,0x400000
-    buf += bytes([0x81, 0xF9]); buf += _st.pack('<i', 0xA0000)  # cmp ecx,0xA0000
-    buf += bytes([0x72]); r8('skip')           # jb .skip（在 ssp.exe 内 → 健康）
-    mark('nut2')
-    neutral()                                  # 模式0/1，或模式2 的坏 thunk
-    buf += bytes([0xEB]); r8('skip')           # jmp .skip
-    mark('notutil')
-    # ---- proc 检查 ----
-    buf += bytes([0x6A, 0xFC])                 # push -4
-    buf += bytes([0x56])                       # push esi
-    buf += bytes([0xFF, 0x93]); d32(IAT_GETWINLONG2)   # call [GetWindowLongA]
-    buf += bytes([0x85, 0xC0])                 # test eax,eax
-    buf += bytes([0x74]); r8('skip')           # jz .skip
-    buf += bytes([0x8B, 0xD0])                 # mov edx,eax
-    buf += bytes([0x2B, 0xD7])                 # sub edx,edi
-    buf += bytes([0x81, 0xFA]); buf += _st.pack('<i', BRIDGE_RVA)  # cmp edx, 桥
-    buf += bytes([0x74]); r8('fix')            # je .fix
-    buf += bytes([0x83, 0x7C, 0x24, 0x28, 0x02])   # cmp dword [esp+0x28],2（模式2=只修类名与桥）
-    buf += bytes([0x74]); r8('skip')           # je .skip
-    buf += bytes([0x80, 0x38, 0xE8])           # cmp byte [eax],0xE8（VCL thunk 首字节）
-    buf += bytes([0x75]); r8('skip')           # jne .skip
-    buf += bytes([0x8B, 0x50, 0x05])           # mov edx,[eax+5]（thunk 内的方法代码）
-    buf += bytes([0x2B, 0xD7])                 # sub edx,edi
-    buf += bytes([0x81, 0xFA]); buf += _st.pack('<i', 0xB0000)  # cmp edx, first.dll CODE 范围
-    buf += bytes([0x73]); r8('fix')            # jae .fix（方法代码越界 = 已释放/回收）
-    buf += bytes([0x83, 0x7C, 0x24, 0x28, 0x00])   # cmp dword [esp+0x28],0（模式：0=不改好窗口）
-    buf += bytes([0x74]); r8('skip')           # je .skip
-    mark('fix')
-    neutral()
-    mark('skip')
-    buf += bytes([0x61])                       # popad
-    buf += bytes([0xB8, 1, 0, 0, 0])           # mov eax,1
-    buf += bytes([0xC2, 0x08, 0x00])           # ret 8
-    for pos, va in disp:
-        _st.pack_into('<i', buf, pos, va - base)
-    for pos, mk in rel8:
-        d = marks[mk] - (pos + 1)
-        if not -128 <= d <= 127:
-            raise RuntimeError(f'窗口安全化短跳超出范围: {d}')
-        buf[pos] = d & 0xFF
-    return bytes(buf)
-
-
-def _build_unload_stub(stub_va, orig_va):
-    import struct as _st
-    buf = bytearray()
-    disp = []
-
-    def d32(va):
-        disp.append((len(buf), va))
-        buf.extend(b'\x00' * 4)
-
-    buf += bytes([0x60])                       # pushad
-    buf += bytes([0xE8, 0, 0, 0, 0])           # call $+5
-    base = stub_va + len(buf)
-    buf += bytes([0x5B])                       # pop ebx
-    # 卸载前：只把"过程=桥"的窗口（对象已死）换成 DefWindowProcA，不影响幽灵自己的收尾处理
-    buf += bytes([0x6A, 0x00])                 # push 0（模式）
-    buf += bytes([0xE8])                       # call 安全化桩
-    pre_off = len(buf)
-    buf.extend(b'\x00' * 4)
-    buf += bytes([0x59])                       # pop ecx（清理模式参数）
-    buf += bytes([0xE8])                       # call 原 unload
-    orig_off = len(buf)
-    buf.extend(b'\x00' * 4)
-    buf += bytes([0x8B, 0xF0])                 # mov esi,eax（保存返回值）
-    # 卸载后：幽灵收尾已跑完，连 VCL thunk 窗口一起安全化（迟到的消息不再进入 VCL）
-    buf += bytes([0x6A, 0x01])                 # push 1（模式）
-    buf += bytes([0xE8])                       # call 安全化桩
-    post_off = len(buf)
-    buf.extend(b'\x00' * 4)
-    buf += bytes([0x59])                       # pop ecx（清理模式参数）
-    buf += bytes([0x8B, 0xC6])                 # mov eax,esi
-    buf += bytes([0x61])                       # popad
-    buf += bytes([0xC3])                       # ret（返回给 SSP）
-    for pos, va in disp:
-        _st.pack_into('<i', buf, pos, va - base)
-    post_va = stub_va - UNLOAD_STUB_OFF + POST_STUB_OFF
-    _st.pack_into('<i', buf, pre_off, post_va - (stub_va + pre_off + 4))
-    _st.pack_into('<i', buf, orig_off, orig_va - (stub_va + orig_off + 4))
-    _st.pack_into('<i', buf, post_off, post_va - (stub_va + post_off + 4))
-    if len(buf) > IME_FONT_CF_OFF - UNLOAD_STUB_OFF:
-        raise RuntimeError('unload 桩过长: %d > %d' % (len(buf), IME_FONT_CF_OFF - UNLOAD_STUB_OFF))
-    return bytes(buf)
-
-
-def patch_unload_notify(data: bytearray) -> bytearray:
-    """包装 unload 导出：原流程前后各做一遍窗口安全化。"""
-    if not UNLOAD_WRAP_ENABLE:
-        return data
-    e = _u32(data, 0x3C)
-    nsec = _u16(data, e + 6)
-    opt_size = _u16(data, e + 20)
-    opt = e + 24
-    sec = opt + opt_size
-    cave_rva = cave_raw = None
-    for i in range(nsec):
-        off = sec + 40 * i
-        if bytes(data[off:off + 5]) == b'.cave':
-            cave_rva = _u32(data, off + 12)
-            cave_raw = _u32(data, off + 20)
-    if cave_rva is None:
-        raise RuntimeError('unload 包装：找不到 .cave 节')
-
-    def rva_off(rva):
-        for i in range(nsec):
-            off = sec + 40 * i
-            va = _u32(data, off + 12)
-            vsz = _u32(data, off + 8)
-            raw = _u32(data, off + 20)
-            rsz = _u32(data, off + 16)
-            if va <= rva < va + max(vsz, rsz):
-                return raw + (rva - va)
-        raise RuntimeError(f'unload 包装：RVA 0x{rva:X} 不在节内')
-
-    ed_rva = _u32(data, opt + 96)
-    if ed_rva == 0:
-        raise RuntimeError('unload 包装：无导出表')
-    eo = rva_off(ed_rva)
-    nnam = _u32(data, eo + 24)
-    afn = _u32(data, eo + 28)
-    anm = _u32(data, eo + 32)
-    aord = _u32(data, eo + 36)
-    ordi = None
-    for i in range(nnam):
-        no = rva_off(_u32(data, rva_off(anm) + 4 * i))
-        end = no
-        while data[end] != 0:
-            end += 1
-        if bytes(data[no:end]) == b'unload':
-            ordi = _u16(data, rva_off(aord) + 2 * i)
-            break
-    if ordi is None:
-        raise RuntimeError('unload 包装：导出缺失')
-    cur = _u32(data, rva_off(afn) + 4 * ordi)
-    if cur != UNLOAD_ORIG_RVA:
-        raise RuntimeError(f'unload 包装：导出地址不符 (0x{cur:X})')
-    cave_va = DPI_WRAP_IB + cave_rva
-    stub_va = cave_va + UNLOAD_STUB_OFF
-    stub = _build_unload_stub(stub_va, DPI_WRAP_IB + UNLOAD_ORIG_RVA)
-    if any(data[cave_raw + UNLOAD_STUB_OFF: cave_raw + IME_FONT_CF_OFF]):
-        raise RuntimeError('unload 包装：位置非空')
-    data[cave_raw + UNLOAD_STUB_OFF: cave_raw + UNLOAD_STUB_OFF + len(stub)] = stub
-    post = _build_post_stub(cave_va + POST_STUB_OFF, cave_va + POST_CB_OFF)
-    pcb = _build_post_cb(cave_va + POST_CB_OFF)
-    if any(data[cave_raw + POST_STUB_OFF: cave_raw + POST_CB_OFF + len(pcb)]):
-        raise RuntimeError('卸载后清理：位置非空')
-    if POST_CB_OFF + len(pcb) > CLASS_BUF_OFF:
-        raise RuntimeError('回调过长，会与类名缓冲重叠: %d > %d' % (POST_CB_OFF + len(pcb), CLASS_BUF_OFF))
-    data[cave_raw + POST_STUB_OFF: cave_raw + POST_STUB_OFF + len(post)] = post
-    data[cave_raw + POST_CB_OFF: cave_raw + POST_CB_OFF + len(pcb)] = pcb
-    struct.pack_into('<I', data, rva_off(afn) + 4 * ordi, cave_rva + UNLOAD_STUB_OFF)
-    print('退出规避已应用: unload 导出包装（窗口安全化 VCL thunk → DefWindowProcA）')
-    return data
-
-
 def patch_dpi_wrap(data: bytearray) -> bytearray:
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -2240,7 +1589,7 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
         sv = DPI_WRAP_IB + cave_rva + off_
         dv = DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF
         tv = DPI_WRAP_IB + frva
-        stub = _build_dpi_wrap_stub(sv, dv, tv, insert_font_call=(nm == 'request'))
+        stub = _build_dpi_wrap_stub(sv, dv, tv)
         limit = (0x1F8 if nm == 'request' else 0x2000)
         if len(stub) > limit - off_:
             raise RuntimeError(f'DPI 包装：{nm} 桩过长 {len(stub)}')
@@ -2542,6 +1891,250 @@ def build_misaki() -> bytes:
     return bytes(data)
 
 
+CLEANUP_EXT_ENABLE = True
+CLEANUP_EXT_STUB_OFF = 0x22E0
+CLEANUP_EXT_FLAG_OFF = 0x23F0
+
+
+def patch_cleanup_ext(data: bytearray) -> bytearray:
+    if not CLEANUP_EXT_ENABLE:
+        return data
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    opt = e + 24
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('cleanup ext：找不到 .cave 节')
+
+    def rva_off(rva):
+        for i in range(nsec):
+            off = sec + 40 * i
+            va = _u32(data, off + 12)
+            vsz = _u32(data, off + 8)
+            if va <= rva < va + vsz:
+                return _u32(data, off + 20) + (rva - va)
+        raise RuntimeError('cleanup ext：RVA 0x%X 不在任何节' % rva)
+
+    IAT = {'VQ': 0xB32E4, 'VA': 0xB32E8, 'EnumW': 0xB3714, 'GWL': 0xB3664,
+           'SWL': 0xB3568, 'DefWnd': 0xB3764, 'CreateThread': 0xB33DC, 'ExitThread': 0xB3208,
+           'Sleep': 0xB32EC, 'GCN': 0xB36F0}
+    cave_va = DPI_WRAP_IB + cave_rva
+    st_va = cave_va + CLEANUP_EXT_STUB_OFF
+
+    # ============ 清道夫（自定位；Sleep 轮询等卸载；单扫；类名前缀/thunk 谓词） ============
+    D = {'base': 0, 'size': 4, 'VQ': 8, 'EnumW': 0xC, 'GWL': 0x10, 'SWL': 0x14,
+         'DefWnd': 0x18, 'ExitThread': 0x1C, 'Sleep': 0x20, 'GCN': 0x24}
+    rb = bytearray()
+    rb += bytes(10 * 4)
+    marks = {}
+    rel8 = []
+
+    def m(mk):
+        marks[mk] = len(rb)
+
+    def j8(mk):
+        rel8.append((len(rb), mk))
+        rb.append(0)
+
+    def slot(op, sl):
+        rb.extend(bytes([op, 0x53, sl]))
+
+    rb += bytes([0xE8, 0, 0, 0, 0])
+    rb += bytes([0x5B])
+    rb += bytes([0x83, 0xEB, 10 * 4 + 5])                # sub ebx,45 -> 页基址
+    # 等卸载：Sleep(50) 轮询（上限 60s）
+    rb += bytes([0xBE]) + struct.pack('<I', 1200)
+    m('wait')
+    rb += bytes([0x6A, 0x32])
+    slot(0xFF, D['Sleep'])
+    rb += bytes([0x83, 0xEC, 0x20])
+    rb += bytes([0x8B, 0xD4])
+    rb += bytes([0x6A, 0x1C, 0x52])
+    rb += bytes([0xFF, 0x33])
+    slot(0xFF, D['VQ'])
+    rb += bytes([0x8B, 0x44, 0x24, 0x10])
+    rb += bytes([0x83, 0xC4, 0x20])
+    rb += bytes([0xA9, 0x00, 0x10, 0x00, 0x00])
+    rb += bytes([0x74]); j8('go')
+    rb += bytes([0x4E])
+    rb += bytes([0x75]); j8('wait')
+    m('go')
+    # 单次扫描
+    rb += bytes([0x6A, 0x00])
+    rb += bytes([0x8D, 0x83])
+    cbdisp_pos = len(rb)
+    rb += bytes(4)
+    rb += bytes([0x50])
+    slot(0xFF, D['EnumW'])
+    rb += bytes([0x6A, 0x00])
+    slot(0xFF, D['ExitThread'])
+    m('cb')
+    # ---- 回调：固定栈形 sub esp,0x40；类名缓冲@esp；MBI@esp+0x20 ----
+    rb += bytes([0x53, 0x56, 0x57])
+    rb += bytes([0x83, 0xEC, 0x40])
+    rb += bytes([0xE8, 0, 0, 0, 0])
+    cb_anchor = len(rb)
+    rb += bytes([0x5B])
+    rb += bytes([0x81, 0xEB]) + struct.pack('<I', cb_anchor)
+    rb += bytes([0x8B, 0x74, 0x24, 0x50])                # mov esi,[esp+0x50]（hwnd）
+    rb += bytes([0x6A, 0xFC, 0x56])
+    slot(0xFF, D['GWL'])
+    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
+    rb += bytes([0x8B, 0xF8])                            # mov edi,eax（proc）
+    rb += bytes([0x8B, 0xFC])                            # mov edi,esp（类名缓冲）
+    rb += bytes([0x6A, 0x1C, 0x57, 0x56])                # push 0x1C ; push edi ; push esi
+    slot(0xFF, D['GCN'])
+    rb += bytes([0x8B, 0x04, 0x24])                      # mov eax,[esp]
+    for v in (0x74555054, 0x746F6E54, 0x72696654):
+        rb += bytes([0x3D]) + struct.pack('<I', v) + bytes([0x74]); j8('destroy')
+    rb += bytes([0x6A, 0xFC, 0x56])                      # push -4 ; push esi（重取 proc）
+    slot(0xFF, D['GWL'])
+    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
+    rb += bytes([0x8B, 0xF8])                            # mov edi,eax
+    # VQ 保护（MBI @esp+0x20）
+    rb += bytes([0x8D, 0x54, 0x24, 0x20])
+    rb += bytes([0x6A, 0x1C, 0x52, 0x57])
+    slot(0xFF, D['VQ'])
+    rb += bytes([0x85, 0xC0]) + bytes([0x74]); j8('epi')
+    rb += bytes([0x8B, 0x54, 0x24, 0x30])
+    rb += bytes([0xF7, 0xC2, 0x00, 0x10, 0x00, 0x00]) + bytes([0x74]); j8('epi')
+    rb += bytes([0x8B, 0x4C, 0x24, 0x34])
+    rb += bytes([0xF6, 0xC1, 0x01]) + bytes([0x75]); j8('epi')
+    rb += bytes([0xF7, 0xC1, 0x00, 0x01, 0x00, 0x00]) + bytes([0x75]); j8('epi')
+    # thunk 特征
+    rb += bytes([0x80, 0x3F, 0xE8]) + bytes([0x75]); j8('epi')
+    rb += bytes([0x8B, 0x57, 0x05])
+    rb += bytes([0x8B, 0x0B])
+    rb += bytes([0x39, 0xCA]) + bytes([0x72]); j8('epi')
+    rb += bytes([0x8B, 0x43, 0x04])
+    rb += bytes([0x01, 0xC8])
+    rb += bytes([0x39, 0xC2]) + bytes([0x73]); j8('epi')
+    m('destroy')
+    rb += bytes([0xFF, 0x73, D['DefWnd']])
+    rb += bytes([0x6A, 0xFC, 0x56])
+    slot(0xFF, D['SWL'])
+    m('epi')
+    rb += bytes([0x83, 0xC4, 0x40])
+    rb += bytes([0xB8, 1, 0, 0, 0])
+    rb += bytes([0x5F, 0x5E, 0x5B, 0xC2, 0x08, 0x00])
+    struct.pack_into('<i', rb, cbdisp_pos, marks['cb'])
+    for pos, mk in rel8:
+        d = marks[mk] - (pos + 1)
+        if not -128 <= d <= 127:
+            raise RuntimeError('cleanup ext：清道夫短跳超界 %s d=%d' % (mk, d))
+        rb[pos] = d & 0xFF
+    reaper_len = len(rb)
+
+    # ---- 找空洞放清道夫 ----
+    rp_off = None
+    i = 0x240
+    while i + reaper_len + 16 <= 0x2400:
+        seg = data[cave_raw + i: cave_raw + i + reaper_len + 16]
+        if not any(seg) and not any(data[cave_raw + max(0, i - 16): cave_raw + i]):
+            rp_off = i
+            break
+        i += 16
+    if rp_off is None:
+        raise RuntimeError('cleanup ext：找不到清道夫空间（需要 %d 字节）' % reaper_len)
+
+    # ============ 请求期生成桩（EAT -> 这里；一次性建线程） ============
+    buf = bytearray()
+    marks2 = {}
+    er32 = []
+
+    def e32(mk):
+        er32.append((len(buf), mk))
+        buf.extend(b'\x00' * 4)
+
+    def mark2(mk):
+        marks2[mk] = len(buf)
+
+    buf += bytes([0x60])
+    buf += bytes([0xE8, 0, 0, 0, 0])
+    anchor_rva = cave_rva + CLEANUP_EXT_STUB_OFF + len(buf)
+    buf += bytes([0x5B])
+    buf += bytes([0x80, 0xBB]) + struct.pack('<i', (cave_rva + CLEANUP_EXT_FLAG_OFF) - anchor_rva) + bytes([0x00])
+    buf += bytes([0x0F, 0x85]); e32('out')   # 已建过 -> 也必须走 popad
+    buf += bytes([0xC6, 0x83]) + struct.pack('<i', (cave_rva + CLEANUP_EXT_FLAG_OFF) - anchor_rva) + bytes([0x01])
+    buf += bytes([0x8B, 0xC3])
+    buf += bytes([0x2D]) + struct.pack('<I', anchor_rva)
+    buf += bytes([0x89, 0xC6])
+    buf += bytes([0x6A, 0x40])
+    buf += bytes([0x68, 0x00, 0x30, 0x00, 0x00])
+    buf += bytes([0x68, 0x00, 0x10, 0x00, 0x00])
+    buf += bytes([0x6A, 0x00])
+    buf += bytes([0xFF, 0x96]) + struct.pack('<I', IAT['VA'])
+    buf += bytes([0x85, 0xC0])
+    buf += bytes([0x0F, 0x84]); e32('out')
+    buf += bytes([0x89, 0xC7])
+    buf += bytes([0xB9]) + struct.pack('<I', reaper_len)
+    buf += bytes([0x8D, 0xB3]) + struct.pack('<i', (cave_rva + rp_off) - anchor_rva)
+    buf += bytes([0xF3, 0xA4])
+    buf += bytes([0x8B, 0xC3])
+    buf += bytes([0x2D]) + struct.pack('<I', anchor_rva)
+    buf += bytes([0x89, 0xC2])
+    buf += bytes([0x89, 0xF9])
+    buf += bytes([0x81, 0xE9]) + struct.pack('<I', reaper_len)
+    buf += bytes([0x89, 0x11])
+    buf += bytes([0xC7, 0x41, 0x04]) + struct.pack('<I', 0x100000)
+    for so, name in ((8, 'VQ'), (0xC, 'EnumW'), (0x10, 'GWL'), (0x14, 'SWL'),
+                     (0x18, 'DefWnd'), (0x1C, 'ExitThread'), (0x20, 'Sleep'), (0x24, 'GCN')):
+        buf += bytes([0x8B, 0x82]) + struct.pack('<I', IAT[name])
+        buf += bytes([0x89, 0x41, so])
+    buf += bytes([0x89, 0xC8])
+    buf += bytes([0x05]) + struct.pack('<I', 10 * 4)
+    buf += bytes([0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0x50, 0x6A, 0x00, 0x6A, 0x00])
+    buf += bytes([0xFF, 0x92]) + struct.pack('<I', IAT['CreateThread'])
+    mark2('out')
+    buf += bytes([0x61])
+    mark2('pass')
+    buf += bytes([0xE9]) + struct.pack('<i', (DPI_WRAP_IB + cave_rva + 0x170) - (st_va + len(buf) + 5))
+    for pos, mk in er32:
+        struct.pack_into('<i', buf, pos, marks2[mk] - (pos + 4))
+
+    if len(buf) > 0x100:
+        raise RuntimeError('cleanup ext：生成桩过长 %d' % len(buf))
+    if any(data[cave_raw + CLEANUP_EXT_STUB_OFF: cave_raw + CLEANUP_EXT_STUB_OFF + len(buf)]):
+        raise RuntimeError('cleanup ext：生成桩位置非空')
+    data[cave_raw + CLEANUP_EXT_STUB_OFF: cave_raw + CLEANUP_EXT_STUB_OFF + len(buf)] = buf
+    data[cave_raw + rp_off: cave_raw + rp_off + reaper_len] = rb
+    data[cave_raw + CLEANUP_EXT_FLAG_OFF] = 0
+
+    # EAT: request -> 生成桩；入口点保持原样（必须）
+    if _u32(data, opt + 16) != 0xAC704:
+        raise RuntimeError('cleanup ext：入口点意外被改 (0x%X)' % _u32(data, opt + 16))
+    ed_rva = _u32(data, opt + 96)
+    eo = rva_off(ed_rva)
+    nnam = _u32(data, eo + 24)
+    afn = _u32(data, eo + 28)
+    anm = _u32(data, eo + 32)
+    aord = _u32(data, eo + 36)
+    hit = False
+    for i in range(nnam):
+        no = rva_off(_u32(data, rva_off(anm) + 4 * i))
+        e2 = no
+        while data[e2] != 0:
+            e2 += 1
+        if bytes(data[no:e2]) == b'request':
+            ordi = _u16(data, rva_off(aord) + 2 * i)
+            sl2 = rva_off(afn) + 4 * ordi
+            cur = struct.unpack_from('<I', data, sl2)[0]
+            if cur != cave_rva + 0x170:
+                raise RuntimeError('cleanup ext：request 导出指向非预期 (0x%X)' % cur)
+            struct.pack_into('<I', data, sl2, cave_rva + CLEANUP_EXT_STUB_OFF)
+            hit = True
+    if not hit:
+        raise RuntimeError('cleanup ext：未找到 request 导出')
+    print('退出规避已应用: cleanup ext v29（请求期建清道夫线程；卸载后断过程）rp=0x%X len=%d' % (rp_off, reaper_len))
+    return data
+
 def deploy_misaki(data: bytes, dst: str):
     """部署 misaki.dll：校验目标当前内容（只接受原始/本脚本历史版本），首次备份原文件。"""
     with open(dst, 'rb') as f:
@@ -2658,13 +2251,11 @@ if DPI_WRAP_ENABLE:
     # 状态栏类补 CS_HREDRAW（仅 TStatusBar，CreateParams 调用点透明桩）
     if CRPARAMS_HREDRAW_ENABLE:
         data = patch_createparams_hredraw(data)
-    # 输入法组字/候选窗：控件焦点期间线程置 GDISCALED（与虚拟化窗口一致）
-    if IME_FOCUS_DPI_ENABLE:
-        data = patch_ime_focus_dpi(data)
-    # Notify 退出崩溃规避：unload 时先销毁 Notify 窗口
-    data = patch_unload_notify(data)
 
 data = patch_aitxt(data)
+
+
+data = patch_cleanup_ext(data)
 
 os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:
