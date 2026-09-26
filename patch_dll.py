@@ -62,13 +62,16 @@ misaki.dll（透明窗命中区）：
    first.dll 的信息窗高度减半 → 信息窗整窗（=文字区）可拖、时钟整窗可拖。
 
 first.dll 退出崩溃修复层（patch_exit_fix）：
-    SSP 退出时模块卸载后残留的"僵尸活动"（消息派发等）会落到已卸载代码上，
-    造成退出崩溃（0x1476a / 0x7474 一族）。本层把修复动作精确插在
-    「teardown 返回之后、FreeLibrary 之前」：存根先销毁两个注册窗体
-    （其析构触发原生存档），再 call 原 teardown 等其返回，随后立即
-    EnumWindows，对 WndProc 落在模块地址范围内的窗口做
-    SetWindowLong(hwnd,-4, DefWindowProcA) 断路，最后 ret 交还 SSP，
-    由 SSP 自行 FreeLibrary。全程同步：无定时器、无辅助线程、无轮询。
+  SSP 退出时模块卸载后残留的"僵尸活动"（消息派发等）会落到已卸载代码上，
+  造成退出崩溃（0x1476a / 0x7474 一族）。本层把修复动作精确插在
+  「teardown 返回之后、FreeLibrary 之前」：存根先把线程 DPI 上下文切到
+  UNAWARE_GDISCALED（与 load/request 包装一致，使析构触发的原生存档读到
+  96dpi 虚拟坐标、与手动关窗的存档一致）并销毁两个注册窗体（析构触发存档），
+  随后 call 原 teardown 等其返回（上下文保持 GDISCALED，teardown 自身销毁
+  窗体触发的存档坐标也一致），再恢复上下文并立即 EnumWindows：对 WndProc
+  落在模块地址范围内的窗口做 SetWindowLong(hwnd,-4, DefWindowProcA) 断路，
+  最后 ret 交还 SSP，由 SSP 自行 FreeLibrary。
+  全程同步：无定时器、无辅助线程、无轮询。
 
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata, zlib
@@ -1912,8 +1915,12 @@ def build_misaki() -> bytes:
 #
 #   SSP 退出
 #     -> 调用 unload 导出（经原入口的内联跳转进入本层存根）
-#     -> 存根：诊断箱位 -> 销毁两个注册窗体对象（析构触发原生存档）
-#     -> call 原 teardown 函数体，等它返回（模块仍存活、存档已完成）
+#     -> 存根：把线程 DPI 上下文切到 UNAWARE_GDISCALED
+#        （与 load/request 包装期间一致：析构触发的原生存档读到 96dpi 虚拟
+#         坐标，与手动关窗的存档一致 —— 修"开着窗口退出保存尺寸 ×1.5"）
+#     -> 销毁两个注册窗体对象（析构触发原生存档）
+#     -> call 原 teardown 函数体并等其返回（模块仍存活；teardown 自身销毁
+#        其它窗体触发的存档同样在 UNAWARE_GDISCALED 下读取，坐标一致）
 #     -> 立即 EnumWindows：对「WndProc 落在模块地址范围内」的窗口
 #        SetWindowLong(hwnd,-4, DefWindowProcA) 断路 —— 之后任何消息都
 #        不会再回到已卸载模块的窗口过程
@@ -1922,20 +1929,20 @@ def build_misaki() -> bytes:
 # 全程同步：无定时器、无辅助线程、无轮询、无 VirtualAlloc。
 #
 # 布局（.cave 固定偏移，均在空闲区，与既有桩/数据区无重叠）：
-#   0x22E0  存根     0x80B（v12 原布局：箱位 + 双销毁 + 本层尾部）
-#   0x226A  收尾例程 ~30B（teardown 返回后执行）
-#   0x2360  枚举回调 ~77B（断路）
+#   0x22E0  存根       0x80B（DPI 切换 + 双销毁 + call teardown + 跳收尾）
+#   0x226A  收尾例程   ~43B（恢复上下文 + EnumWindows 断路）
+#   0x2360  枚举回调   ~77B（断路）
+#   0x23F4  上下文暂存槽 4B（运行时写）
 # ============================================================================
 EXITFIX_ENABLE = True
 EXITFIX_STUB_OFF = 0x22E0        # 存根
 EXITFIX_POST_OFF = 0x226A        # 收尾例程（teardown 返回后执行）
 EXITFIX_CB_OFF   = 0x2360        # 枚举回调（断路）
-EXITFIX_STR_PTR1 = 0x23D0        # 箱位字符串指针 1（指向空闲零区，仅保留 v12 布局）
-EXITFIX_STR_PTR2 = 0x23F0        # 箱位字符串指针 2
+EXITFIX_PSET_OFF = 0xB0          # .cave 高分屏数据区 +0x00：PSET 指针槽（包装桩惰性解析）
+EXITFIX_CTX_STASH = 0x23F4       # 旧 DPI 上下文暂存槽（存根写、收尾例程恢复）
 EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口（内联跳转用）
 EXITFIX_UNLOAD_PROLOG = bytes.fromhex('55 8B EC 51 53')   # 原 unload 入口序言
 
-_EXF_IAT_MSGBOX = 0xB35F8        # MessageBoxA（被 SSP 拦截；箱位仅保留 v12 布局）
 _EXF_IAT_GWL    = 0xB3664        # GetWindowLongA
 _EXF_IAT_SWL    = 0xB3568        # SetWindowLongA
 _EXF_IAT_DEFWND = 0xB3764        # DefWindowProcA
@@ -1950,23 +1957,26 @@ _EXF_EXPECT_CAVE_RVA = 0xE2000   # .cave 期望 RVA（add_cave_section 的固定
 
 
 def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
-    """存根（0x80B）：箱位 + 销毁槽 A/B + call teardown 等返回 + 跳收尾例程。"""
-    anchor = stub_va + 6
+    """存根（0x80B）：切请求态 DPI 上下文 + 销毁槽 A/B + call teardown + 跳收尾例程。"""
+    anchor = stub_va + 5          # call 在偏移 0（无 pushal 前置），返回址 = 起点+5
     def L(va):                    # 绝对 VA 相对锚点的位移
         return struct.pack('<i', va - anchor)
     def C(off):                   # .cave 内偏移 -> 位移
         return L(cave_va + off)
     b = bytearray()
+    b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx（锚点，先于 pushal）
+    # —— 线程 DPI 上下文切 UNAWARE_GDISCALED(-5)：析构触发的存档将读到
+    #    96dpi 虚拟坐标（与手动关窗一致，修退出存档尺寸 ×1.5）；旧上下文
+    #    先存槽，由收尾例程恢复（teardown 也在 GDISCALED 下运行，其存档坐标一致）。
+    #    槽为空（旧系统无该 API，包装桩未解析出指针）时整段跳过。 ——
+    b += b'\x8B\x83' + C(EXITFIX_PSET_OFF)              # mov eax,[ebx+pset槽]
+    b += b'\x85\xC0'                                    # test eax,eax
+    b += b'\x74\x0A'                                    # je .skip（跳过 10 字节）
+    b += b'\x6A\xFB'                                    # push -5（UNAWARE_GDISCALED）
+    b += b'\xFF\xD0'                                    # call eax（PSET；返回旧上下文）
+    b += b'\x89\x83' + C(EXITFIX_CTX_STASH)             # mov [ebx+暂存槽],eax
+    # .skip:
     b += b'\x60'                                        # pushal
-    b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx
-    # —— 诊断箱位（保留 v12 原布局；SSP 拦截 MessageBoxA 后为空操作）——
-    b += b'\x6A\x00'                                    # push 0
-    b += b'\x8D\x83' + C(EXITFIX_STR_PTR1)              # lea eax,[ebx+str1]
-    b += b'\x50'                                        # push eax
-    b += b'\x8D\x83' + C(EXITFIX_STR_PTR2)              # lea eax,[ebx+str2]
-    b += b'\x50'                                        # push eax
-    b += b'\x6A\x00'                                    # push 0
-    b += b'\xFF\x93' + L(0x400000 + _EXF_IAT_MSGBOX)    # call [MessageBoxA]
     # —— 销毁槽 A（Tnotifyform）：RTTI 校验 -> TObject.Free -> 槽清零 ——
     b += b'\x8B\x83' + L(_EXF_SLOT_A)                   # mov eax,[slotA]
     b += b'\x85\xC0'                                    # test eax,eax
@@ -1989,26 +1999,35 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
     b += b'\x8D\x93' + L(_EXF_FREE_THUNK)
     b += b'\xFF\xD2'
     b += b'\xC7\x83' + L(_EXF_SLOT_B) + b'\x00\x00\x00\x00'
-    # —— 尾部：popal + 重放序言 + call teardown（等返回）+ jmp 收尾例程 ——
+    # —— 尾部：popal + 重放序言 + call teardown（等返回）+ 跳收尾例程。
+    #    DPI 上下文（UNAWARE_GDISCALED）保持到收尾例程：teardown 自身销毁
+    #    窗体触发的存档（时钟/CPU 等）同样读到 96dpi 虚拟坐标，与手动关窗一致。 ——
     b += b'\x61'                                        # popal
     b += b'\x55\x8B\xEC\x51\x53'                        # 重放序言（= 原函数前 5 字节）
     here = stub_va + len(b)
     b += b'\xE8' + struct.pack('<i', _EXF_TEARDOWN - (here + 5))   # _EXF_TEARDOWN 已是 VA
     here = stub_va + len(b)
     b += b'\xE9' + struct.pack('<i', (cave_va + EXITFIX_POST_OFF) - (here + 5))
-    b += b'\x00'                                        # 对齐填充
+    b += bytes(0x80 - len(b))                           # 对齐填充
     assert len(b) == 0x80, len(b)
     return bytes(b)
 
 
 def _exitfix_post(cave_va: int) -> bytes:
-    """收尾例程：teardown 返回后，立即发起 EnumWindows 断路一轮，然后交还 SSP。"""
+    """收尾例程：恢复线程 DPI 上下文 -> EnumWindows 断路一轮 -> 交还 SSP。"""
     pv = cave_va + EXITFIX_POST_OFF
     def L(va):
         return struct.pack('<i', va - pv)
     b = bytearray()
     b += b'\x60'                                        # pushal
     b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
+    # —— 恢复 DPI 上下文（暂存槽=0 表示存根未切换过，跳过）——
+    b += b'\x8B\x83' + L(cave_va + EXITFIX_CTX_STASH)   # mov eax,[ebx+暂存槽]
+    b += b'\x85\xC0'                                    # test eax,eax
+    b += b'\x74\x03'                                    # je .skip（跳过 push/call）
+    b += b'\x50'                                        # push eax
+    b += b'\xFF\xD0'                                    # call eax（PSET(旧上下文)）
+    # .skip:
     b += b'\x6A\x00'                                    # push 0 （lParam）
     b += b'\x8D\x83' + L(cave_va + EXITFIX_CB_OFF)      # lea eax,[ebx+cb]
     b += b'\x50'                                        # push eax（回调）
@@ -2087,10 +2106,11 @@ def patch_exit_fix(data: bytearray) -> bytearray:
             raise RuntimeError('exitfix：%s @cave+0x%X 非零，疑似布局冲突' % (what, off))
     expect_zero(EXITFIX_POST_OFF, 0x22C0 - EXITFIX_POST_OFF, '收尾例程区')  # 0x22C0 起为既有桩，避开
     expect_zero(EXITFIX_CB_OFF, 0x70, '回调区')
+    expect_zero(EXITFIX_CTX_STASH, 4, '上下文暂存槽')
     if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x80]):
         raise RuntimeError('exitfix：存根区 @cave+0x%X 非零' % EXITFIX_STUB_OFF)
 
-    # —— 写入本层三段 ——
+    # —— 写入本层四段 ——
     d_stub = _exitfix_stub(cave_va + EXITFIX_STUB_OFF, cave_va)
     data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + len(d_stub)] = d_stub
     d_post = _exitfix_post(cave_va)
@@ -2106,7 +2126,7 @@ def patch_exit_fix(data: bytearray) -> bytearray:
 
     # —— 说明：不改导出表 EAT。SSP 经导出表调用到原入口 0xAA234，
     #         再由上面的入口内联跳转进入存根（与验证版设计一致）。
-    print('退出崩溃修复层已应用: 存根+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
+    print('退出崩溃修复层已应用: 存根(含DPI上下文切换)+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
           % (EXITFIX_STUB_OFF, EXITFIX_POST_OFF, EXITFIX_CB_OFF))
     return data
 
