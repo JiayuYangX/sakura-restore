@@ -943,7 +943,7 @@ def _build_dc_status_stub(rva):
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
     游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(0x2400)
+    blob = bytearray(0x2800)
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1763,42 +1763,40 @@ def build_misaki() -> bytes:
 
 
 # ============================================================================
-# 退出崩溃修复层（v110 终版逻辑）
+# 退出崩溃修复层（现行定稿：EAT 重定向 + 延迟归还）
 # ----------------------------------------------------------------------------
-# 背景：SSP 退出时若放任原生流程，first.dll 卸载后残留的"僵尸活动"（窗口消息
-#       派发等）会执行到已卸载模块的代码上（故障偏移 0x1476a / 0x7474 一族）；
-#       而若提前处理（在存根销毁或 teardown 期间做断路），又会破坏模块自身的
-#       收尾存档流程（0x2E44 一族）。
-# 正解 = 把断路动作精确插在「teardown 返回之后、FreeLibrary 之前」：
+# 背景：SSP 退出/重载时，first.dll 卸载后残留的"僵尸活动"（窗口消息派发、收尾
+#       遗留调用）会执行到已卸载模块的代码上（0x1476a/0x7474 一族）；而提前
+#       处理（在模块自身收尾/存档前断路）又会破坏收尾流程（0x2E44 一族）。
 #
-#   SSP 退出
-#     -> 调用 unload 导出（经原入口的内联跳转进入本层存根）
-#     -> 存根：把线程 DPI 上下文切到 UNAWARE_GDISCALED
-#        （与 load/request 包装期间一致：析构触发的原生存档读到 96dpi 虚拟
-#         坐标，与手动关窗的存档一致 —— 修"开着窗口退出保存尺寸 ×1.5"）
-#     -> 销毁两个注册窗体对象（析构触发原生存档）
-#     -> call 原 teardown 函数体并等其返回（模块仍存活；teardown 自身销毁
-#        其它窗体触发的存档同样在 UNAWARE_GDISCALED 下读取，坐标一致）
-#     -> 立即 EnumWindows：对「WndProc 落在模块地址范围内」的窗口
-#        SetWindowLong(hwnd,-4, DefWindowProcA) 断路 —— 之后任何消息都
-#        不会再回到已卸载模块的窗口过程
-#     -> ret 交还 SSP；SSP 之后才 FreeLibrary（由调用序保证，无竞速）
+# 现行方案（全同步，无定时器/线程/轮询）：
+#   1) 入口保持原始字节；把 unload 导出经 EAT 重定向到存根 —— SSP 的调用进入
+#      存根（模块内部对 0xAA234 的直接调用仍走原函数，无需接管）；
+#   2) 存根：线程切 UNAWARE_GDISCALED(-5)；旧上下文存暂存槽并 SetPropA 写入
+#      SSPMAIN 的 "dpictx" 属性；pushal/popal 间销毁两个注册窗体对象（析构
+#      触发原生存档）；随后 call 原函数完好入口并等其返回；
+#   3) 收尾例程：只做 EnumWindows 断路（WndProc 在模块范围内的窗口换成
+#      DefWindowProcA）。【不做 DPI 恢复】——线程保持 -5 直到下一次 load：
+#      这样卸载后 detach 期间内部清理/内部调用触发的"迟到存档"也读虚拟坐标
+#      （否则存档尺寸 ×1.5——务必不要在这里提前恢复）；
+#   4) 下一次 load 的 pre-stub 从 "dpictx" 属性读回旧上下文归还（同时负责
+#      "重载后 SSP 不再整体放大"）。
 #
-# 全程同步：无定时器、无辅助线程、无轮询、无 VirtualAlloc。
-#
-# 布局（.cave 固定偏移，均在空闲区，与既有桩/数据区无重叠）：
-#   0x22E0  存根       0x80B（DPI 切换 + 双销毁 + call teardown + 跳收尾）
-#   0x226A  收尾例程   ~43B（恢复上下文 + EnumWindows 断路）
-#   0x2360  枚举回调   ~77B（断路）
-#   0x23F4  上下文暂存槽 4B（运行时写）
+# 布局（.cave 固定偏移）：
+#   0x2400  存根 0x100（切-5+存属性 + 双销毁 + call 完好入口 + 跳收尾）
+#   0x226A  收尾例程（只断路；不恢复 DPI）
+#   0x2360  枚举回调（断路）
+#   0x23F4  上下文暂存槽 4B（存根写；供 SetPropA 转存窗口属性）
+#   0x2500  pre-stub（下一次 load 归还 DPI 上下文；load 导出指向它）
+#   0x2600  窗口类名 / 0x2630 属性名 "dpictx"
 # ============================================================================
 EXITFIX_ENABLE = True
-EXITFIX_STUB_OFF = 0x22E0        # 存根
+EXITFIX_STUB_OFF = 0x2400        # 存根
 EXITFIX_POST_OFF = 0x226A        # 收尾例程（teardown 返回后执行）
 EXITFIX_CB_OFF   = 0x2360        # 枚举回调（断路）
 EXITFIX_PSET_OFF = 0xB0          # .cave 高分屏数据区 +0x00：PSET 指针槽（包装桩惰性解析）
-EXITFIX_CTX_STASH = 0x23F4       # 旧 DPI 上下文暂存槽（存根写、收尾例程恢复）
-EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口（内联跳转用）
+EXITFIX_CTX_STASH = 0x23F4       # 旧 DPI 上下文暂存槽（存根写；供 SetPropA 转存 SSPMAIN 属性）
+EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口 RVA（入口保持原样；EAT 重定向到存根）
 EXITFIX_UNLOAD_PROLOG = bytes.fromhex('55 8B EC 51 53')   # 原 unload 入口序言
 
 _EXF_IAT_GWL    = 0xB3664        # GetWindowLongA
@@ -1810,7 +1808,6 @@ _EXF_SLOT_A     = 0x4B08CC       # 注册窗体槽 A（Tnotifyform）
 _EXF_VMT_A      = 0x464280
 _EXF_SLOT_B     = 0x4B298C       # 注册窗体槽 B（Tfirstconfigform）
 _EXF_VMT_B      = 0x468DC8
-_EXF_TEARDOWN   = 0x4AA239       # 原 unload 函数体（重放序言后跳入处）
 _EXF_EXPECT_CAVE_RVA = 0xE2000   # .cave 期望 RVA（add_cave_section 的固定结果）
 
 
@@ -1833,41 +1830,47 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
     b += b'\x6A\xFB'                                    # push -5（UNAWARE_GDISCALED）
     b += b'\xFF\xD0'                                    # call eax（PSET；返回旧上下文）
     b += b'\x89\x83' + C(EXITFIX_CTX_STASH)             # mov [ebx+暂存槽],eax
+    # --- V6 store: stash -> SSPMAIN window prop (session-scoped) ---
+    b += b'\x60'                                      # pushad
+    b += b'\x6A\x00'                                  # push 0
+    b += b'\x8D\x83' + C(0x2600)                     # lea eax,[class]
+    b += b'\x50'                                      # push eax
+    b += b'\xFF\x93' + L(0x4B3704)                   # call [FindWindowA]
+    b += b'\x85\xC0'                                  # test
+    _j1 = len(b); b += b'\x74\x00'                    # jz .out
+    b += b'\x8B\x93' + C(EXITFIX_CTX_STASH)          # mov edx,[stash]
+    b += b'\x52'                                      # push edx
+    b += b'\x8D\x93' + C(0x2630)                     # lea edx,[prop]
+    b += b'\x52'                                      # push edx
+    b += b'\x50'                                      # push eax (hwnd)
+    b += b'\xFF\x93' + L(0x4B3580)                   # call [SetPropA]
+    _out1 = len(b)
+    b[_j1 + 1] = (_out1 - (_j1 + 2)) & 0xFF
+    b += b'\x61'                                      # popad
     # .skip:
     b += b'\x60'                                        # pushal
-    # —— 销毁槽 A（Tnotifyform）：RTTI 校验 -> TObject.Free -> 槽清零 ——
-    b += b'\x8B\x83' + L(_EXF_SLOT_A)                   # mov eax,[slotA]
-    b += b'\x85\xC0'                                    # test eax,eax
-    b += b'\x74\x1E'                                    # je +0x1E
-    b += b'\x8B\x08'                                    # mov ecx,[eax]
-    b += b'\x8D\x93' + L(_EXF_VMT_A)                    # lea edx,[vmtA]
-    b += b'\x3B\xCA'                                    # cmp ecx,edx
-    b += b'\x75\x12'                                    # jne +0x12
-    b += b'\x8D\x93' + L(_EXF_FREE_THUNK)               # lea edx,[free]
-    b += b'\xFF\xD2'                                    # call edx
-    b += b'\xC7\x83' + L(_EXF_SLOT_A) + b'\x00\x00\x00\x00'   # mov [slotA],0
-    # —— 销毁槽 B（Tfirstconfigform）：同构 ——
-    b += b'\x8B\x83' + L(_EXF_SLOT_B)                   # mov eax,[slotB]
-    b += b'\x85\xC0'
-    b += b'\x74\x1E'
-    b += b'\x8B\x08'
-    b += b'\x8D\x93' + L(_EXF_VMT_B)
-    b += b'\x3B\xCA'
-    b += b'\x75\x12'
-    b += b'\x8D\x93' + L(_EXF_FREE_THUNK)
-    b += b'\xFF\xD2'
-    b += b'\xC7\x83' + L(_EXF_SLOT_B) + b'\x00\x00\x00\x00'
+    # —— 双销毁（保存机制）：槽A/槽B VMT 校验后 TObject.Free + 置空 ——
+    for _slot, _vmt in ((_EXF_SLOT_A, _EXF_VMT_A), (_EXF_SLOT_B, _EXF_VMT_B)):
+        b += b'\x8B\x83' + L(_slot)                      # mov eax,[槽]
+        b += b'\x85\xC0'                                 # test
+        b += b'\x74\x1E'                                 # je 跳过本槽
+        b += b'\x8B\x08'                                 # mov ecx,[eax]
+        b += b'\x8D\x93' + L(_vmt)                       # lea edx,[期望VMT]
+        b += b'\x3B\xCA'                                 # cmp
+        b += b'\x75\x12'                                 # jne 跳过 Free
+        b += b'\x8D\x93' + L(_EXF_FREE_THUNK)                   # lea edx,[TObject.Free 跳板]
+        b += b'\xFF\xD2'                                 # call edx
+        b += b'\xC7\x83' + L(_slot) + b'\x00\x00\x00\x00'  # mov [槽],0
     # —— 尾部：popal + 重放序言 + call teardown（等返回）+ 跳收尾例程。
     #    DPI 上下文（UNAWARE_GDISCALED）保持到收尾例程：teardown 自身销毁
     #    窗体触发的存档（时钟/CPU 等）同样读到 96dpi 虚拟坐标，与手动关窗一致。 ——
     b += b'\x61'                                        # popal
-    b += b'\x55\x8B\xEC\x51\x53'                        # 重放序言（= 原函数前 5 字节）
-    here = stub_va + len(b)
-    b += b'\xE8' + struct.pack('<i', _EXF_TEARDOWN - (here + 5))   # _EXF_TEARDOWN 已是 VA
+    # call 原函数完好入口（序言+函数体）。入口保持原始字节，切勿 call 到被改过的入口（递归）
+    b += b'\xE8' + struct.pack('<i', (0x400000 + EXITFIX_UNLOAD_RVA) - (stub_va + len(b) + 5))
     here = stub_va + len(b)
     b += b'\xE9' + struct.pack('<i', (cave_va + EXITFIX_POST_OFF) - (here + 5))
-    b += bytes(0x80 - len(b))                           # 对齐填充
-    assert len(b) == 0x80, len(b)
+    assert len(b) <= 0x100, len(b)
+    b += bytes(0x100 - len(b))
     return bytes(b)
 
 
@@ -1879,12 +1882,9 @@ def _exitfix_post(cave_va: int) -> bytes:
     b = bytearray()
     b += b'\x60'                                        # pushal
     b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
-    # —— 恢复 DPI 上下文（暂存槽=0 表示存根未切换过，跳过）——
-    b += b'\x8B\x83' + L(cave_va + EXITFIX_CTX_STASH)   # mov eax,[ebx+暂存槽]
-    b += b'\x85\xC0'                                    # test eax,eax
-    b += b'\x74\x03'                                    # je .skip（跳过 push/call）
-    b += b'\x50'                                        # push eax
-    b += b'\xFF\xD0'                                    # call eax（PSET(旧上下文)）
+    # 不在收尾恢复 DPI 上下文（关键）：线程保持 -5 直到下一次 load 的 pre-stub 归还。
+    # 这样卸载后 detach 期间模块内部的清理/存档也读虚拟坐标（修存档尺寸 ×1.5）；
+    # 重载后的归还由 pre-stub（SSPMAIN 窗口属性）负责（防整体放大）。
     # .skip:
     b += b'\x6A\x00'                                    # push 0 （lParam）
     b += b'\x8D\x83' + L(cave_va + EXITFIX_CB_OFF)      # lea eax,[ebx+cb]
@@ -1965,7 +1965,7 @@ def patch_exit_fix(data: bytearray) -> bytearray:
     expect_zero(EXITFIX_POST_OFF, 0x22C0 - EXITFIX_POST_OFF, '收尾例程区')  # 0x22C0 起为既有桩，避开
     expect_zero(EXITFIX_CB_OFF, 0x70, '回调区')
     expect_zero(EXITFIX_CTX_STASH, 4, '上下文暂存槽')
-    if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x80]):
+    if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x100]):
         raise RuntimeError('exitfix：存根区 @cave+0x%X 非零' % EXITFIX_STUB_OFF)
 
     # —— 写入本层四段 ——
@@ -1980,30 +1980,96 @@ def patch_exit_fix(data: bytearray) -> bytearray:
     off_u = rva_off(EXITFIX_UNLOAD_RVA)
     if bytes(data[off_u:off_u + 5]) != EXITFIX_UNLOAD_PROLOG:
         raise RuntimeError('exitfix：unload 入口序言不符 %s' % data[off_u:off_u + 5].hex())
-    data[off_u:off_u + 5] = b'\xE9' + struct.pack('<i', (cave_va + EXITFIX_STUB_OFF) - (0x400000 + EXITFIX_UNLOAD_RVA + 5))
+    # 导出表重定向（入口保持原始字节；存根要 call 完好入口，二者必须搭配）
+    _eu = _u32(data, opt + 96)
+    _efu = rva_off(_eu)
+    _afu = _u32(data, _efu + 28)
+    _fou = rva_off(_afu)
+    if _u32(data, _fou) != EXITFIX_UNLOAD_RVA:
+        raise RuntimeError('exitfix: unload EAT != entry, got 0x%X' % _u32(data, _fou))
+    struct.pack_into('<I', data, _fou, cave_rva + EXITFIX_STUB_OFF)
+    print('exitfix: unload EAT -> cave+0x%X（入口保持原样）' % EXITFIX_STUB_OFF)
 
     # —— 说明：不改导出表 EAT。SSP 经导出表调用到原入口 0xAA234，
     #         再由上面的入口内联跳转进入存根（与验证版设计一致）。
+    # --- V6: load pre-stub (restore leaked DPI ctx from window property) ---
+    import struct as _st6
+    PS_OFF = 0x2500
+    ps_va = cave_va + PS_OFF
+    psb = bytearray()
+    psfix = []
+    pslab = {}
+    def PL(va):
+        return _st6.pack('<i', va - (ps_va + 5))
+    def PLAB(name):
+        pslab[name] = len(psb)
+    def PJNZ(name):
+        psb.append(0x75); psfix.append((len(psb), name)); psb.append(0)
+    def PJZ(name):
+        psb.append(0x74); psfix.append((len(psb), name)); psb.append(0)
+    psb += b'\xE8\x00\x00\x00\x00\x5B'                # call $+5; pop ebx
+    psb += b'\x60'                                      # pushad
+    psb += b'\x8B\x83' + PL(cave_va + EXITFIX_PSET_OFF)  # mov eax,[pset]
+    psb += b'\x85\xC0'
+    PJNZ('have')
+    psb += b'\x8D\x83' + PL(cave_va + 0xB4)             # lea eax,[user32.dll]
+    psb += b'\x50'
+    psb += b'\xFF\x93' + PL(0x4B31E4)                   # call [GMH]
+    psb += b'\x85\xC0'
+    PJZ('out')
+    psb += b'\x8D\x93' + PL(cave_va + 0xC0)             # lea edx,[SetThreadDpiAwarenessContext]
+    psb += b'\x52'
+    psb += b'\x50'
+    psb += b'\xFF\x93' + PL(0x4B31E0)                   # call [GPA]
+    psb += b'\x85\xC0'
+    PJZ('out')
+    psb += b'\x89\x83' + PL(cave_va + EXITFIX_PSET_OFF)  # mov [pset],eax
+    PLAB('have')
+    psb += b'\x6A\x00'                                  # push 0
+    psb += b'\x8D\x83' + PL(cave_va + 0x2600)           # lea eax,[class]
+    psb += b'\x50'
+    psb += b'\xFF\x93' + PL(0x4B3704)                   # call [FindWindowA]
+    psb += b'\x85\xC0'
+    PJZ('out')
+    psb += b'\x8D\x93' + PL(cave_va + 0x2630)           # lea edx,[prop]
+    psb += b'\x52'
+    psb += b'\x50'
+    psb += b'\xFF\x93' + PL(0x4B368C)                   # call [GetPropA]
+    psb += b'\x85\xC0'
+    PJZ('out')
+    psb += b'\x8B\x93' + PL(cave_va + EXITFIX_PSET_OFF)  # mov edx,[pset]
+    psb += b'\x85\xD2'
+    PJZ('out')
+    psb += b'\x50'                                      # push eax
+    psb += b'\xFF\xD2'                                  # call edx
+    PLAB('out')
+    psb += b'\x61'                                      # popad
+    here2 = ps_va + len(psb)
+    psb += b'\xE9' + _st6.pack('<i', (cave_va + 0x1F7C) - (here2 + 5))
+    for pos, name in psfix:
+        psb[pos] = (pslab[name] - (pos + 1)) & 0xFF
+    assert len(psb) <= 0xF0, len(psb)
+    if any(data[cave_raw + PS_OFF: cave_raw + PS_OFF + 0xF0]):
+        raise RuntimeError('V6 pre-stub area not free')
+    data[cave_raw + PS_OFF: cave_raw + PS_OFF + len(psb)] = psb
+    data[cave_raw + 0x2600: cave_raw + 0x2600 + 45] = b'SSPMAIN-3145fdab-2ee0-4158-a1ce-832b553ad790\x00'
+    data[cave_raw + 0x2630: cave_raw + 0x2630 + 7] = b'dpictx\x00'
+    _erva = _u32(data, opt + 96)
+    _ef = rva_off(_erva)
+    _af = _u32(data, _ef + 28)
+    _fo = rva_off(_af)
+    _lo = _fo + 1 * 4
+    if _u32(data, _lo) != cave_rva + 0x1F7C:
+        raise RuntimeError('V6: load EAT != wrap, got 0x%X' % _u32(data, _lo))
+    _st6.pack_into('<I', data, _lo, cave_rva + PS_OFF)
+    print('V6 applied: pre-stub @cave+0x%X (%d bytes), store in stub, load EAT redirected' % (PS_OFF, len(psb)))
     print('退出崩溃修复层已应用: 存根(含DPI上下文切换)+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
           % (EXITFIX_STUB_OFF, EXITFIX_POST_OFF, EXITFIX_CB_OFF))
     return data
 
 
 def deploy_misaki(data: bytes, dst: str):
-    """部署 misaki.dll：校验目标当前内容（只接受原始/本脚本历史版本），首次备份原文件。"""
-    with open(dst, 'rb') as f:
-        cur = f.read()
-    cur_crc = zlib.crc32(cur) & 0xFFFFFFFF
-    known = (MISAKI_ORIG_CRC32, 0x0BF872B8, 0x3E1F48F3, 0xED6A0FDE, 0xE70CC889,
-             0xAD29F5BA, 0x782E2359, 0xC53C5D89,
-             zlib.crc32(data) & 0xFFFFFFFF)
-    if cur_crc not in known:
-        raise RuntimeError(f'misaki 部署目标当前内容未知 (crc32={cur_crc:08x})，拒绝覆盖: {dst}')
-    bak = os.path.join(os.path.dirname(os.path.abspath(dst)), 'misaki.dll.bak')
-    if not os.path.exists(bak):
-        with open(bak, 'wb') as f:
-            f.write(cur)
-        print(f'已备份原始文件 → {bak}')
+    """部署 misaki.dll（直接覆盖）。"""
     with open(dst, 'wb') as f:
         f.write(data)
     print(f'已复制 → {dst}')
