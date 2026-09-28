@@ -606,9 +606,9 @@ Offset,Length,Type,Text
 0x6BF10,4,code,大名
 0x6BF20,10,code,香肠
 0x6BF34,12,code,光束发射！
-0x6BF4C,38,code,那在樱屋卖得更便宜哦。
+0x6BF4C,38,code,在樱屋卖得更便宜哦。
 0x6BF7C,4,code,的狗
-0x6BF8C,10,code,的父亲。
+0x6BF8C,10,code,的爸爸。
 0x6BFA0,2,code,病
 0x6BFAC,24,code,在装懂好烦
 0x6BFD0,37,code,被抢怪用MPK报复
@@ -637,13 +637,13 @@ Offset,Length,Type,Text
 0x6F4E8,138,code,\1\s0……\w8\w8\w8不过，话说回来，\w8那根本就是诈骗吧。\w8\w8\0\s5\n\n乌纽别多嘴！\w8\w8\n\n详情请看这个网站。
 0x6F57C,63,code,"\![open,browser,https://ja.wikipedia.org/wiki/CompJapan]"
 0x6F988,10,code,用户桑
-0x6FA80,184,code,\0\s[20]啊……\w8\w8是吗。\w8\w8\n\n\s0今天是当天啊……\w8\w8\1\s0是当天呢。\w8\w8\w8\w8\n\n\0\n\n嘛，不勉强说一定要投，不过如果可以的话请投票\n\n\0\s5\1\s2\_s拜托了。\_s
-0x6FB44,82,code,\0\s[20]啊……\w8\w8\w8\n\s5说起来，昨天多谢支援了！\w8\w8
+0x6FA80,184,code,\0\s[20]啊……\w8\w8这样啊。\w8\w8\n\n\s0今天就是投票日啊……\w8\w8\1\s0就是当天呢。\w8\w8\w8\w8\n\n\0\n\n嘛，不是强迫你啦，但如果可以的话请投我一票\n\n\0\s5\1\s2\_s拜托了。\_s
+0x6FB44,82,code,\0\s[20]啊……\w8\w8\w8\n\s5对了，昨天多谢你的应援！\w8\w8
 0x6FBA0,25,code,\1\s0谢了啊。\w8\w8
-0x6FBC4,83,code,\0\s0\n\n……\w8\w8虽然也没做什么特别的事，\w8\n但总觉得好累……\w8\w8\w8
-0x6FC20,185,code,\1\n\n……\w8\w8嘛，是祭典嘛。\w8\w8\w8\w8\0\s0\n\n嗯。\w8\w8\n\s5好，今天起恢复正常营业。\w8\w8\w8\1\s0\n\n……\w8\w8还有第二轮呢。\w8\w8\0\n\n……\w8\w8诶？
-0x6FF7C,60,code,\1\s0是在睡觉的时候换的吗……\w8\w8\w8\w8\w8\w8\n\n\s1行吗？
-0x6FFC4,66,code,\1\s0是在泡澡的时候换的吗……\w8\w8\w8\w8\w8\w8\n\n\s1行吗？
+0x6FBC4,83,code,\0\s0\n\n……\w8\w8明明也没做什么特别的事，\w8\n但总觉得好累啊……\w8\w8\w8
+0x6FC20,185,code,\1\n\n……\w8\w8嘛，是祭典嘛。\w8\w8\w8\w8\0\s0\n\n嗯。\w8\w8\n\s5那么，从今天起恢复正常营业啦。\w8\w8\w8\1\s0\n\n……\w8\w8还有第二轮呢。\w8\w8\0\n\n……\w8\w8啊？
+0x6FF7C,60,code,\1\s0趁睡觉时换人吗……\w8\w8\w8\w8\w8\w8\n\n\s1这样好吗？
+0x6FFC4,66,code,\1\s0趁泡澡的时候换人吗……\w8\w8\w8\w8\w8\w8\n\n\s1这样好吗？
 0x70010,4,code,陽子
 0x70020,32,code,\0\s0\1\s0\_s鹰爪启动。\_s
 0x7004C,4,code,愛理
@@ -871,7 +871,7 @@ Offset,Length,Type,Text
 0x7C0F8,46,code,\1\s0还行吧。\w8\w8\0\s5下次加油哦。
 0x7C130,61,code,\0\s0没能刷新记录……\w8好。\w8\w8\n\n\s5下次加油哦。
 0x7C178,65,code,\0\s0（看到这条消息的人处于Mercury Rising状态）\e
-0x7C1D0,64,code,"好，回到标题了哦。\w8\w8\![raise,OnTypinggameEnter,return]"
+0x7C1D0,64,code,"那么，回到标题了哦。\w8\w8\![raise,OnTypinggameEnter,return]"
 0x7C25C,60,code,"\0\s0那么，\s5开始吧。\w8\w8\![raise,OnTypinggameNext]"
 0x7C314,24,code,然后……\w8\w8\n\n\s0\_q
 0x7C3A4,39,code,\0\s[20]菜单……\w8\w8\s0好。\n\n
@@ -1006,11 +1006,11 @@ Offset,Length,Type,Text
 0x7E4F0,29,code,\0……\w8\w8\s4小心哦。
 0x7E52C,42,code,\0\s0嗯。\w8\w8\n\n\s5完全没问题哦。
 0x7E560,46,code,\0\s0嗯。\w8\w8\n\n\s5可能有点累了……
-0x7E598,68,code,\0\s0……\w8\w8\w8\w8\s5能让我稍微睡会的话我会很开心的。
-0x7E5E8,118,code,"\1\s0……行吗？\w8\w8\w8\w8\n\n那，我不客气了。\w8\w8\n\n\s2那再见……\w8\w8\![set,windowstate,minimize]"
+0x7E598,68,code,\0\s0……\w8\w8\w8\w8\s5如果可以的话，能让我稍微睡会儿我会很开心的。
+0x7E5E8,118,code,"\1\s0……这样好吗？\w8\w8\w8\w8\n\n那我就这么办啦。\w8\w8\n\n\s2再见啦……\w8\w8\![set,windowstate,minimize]"
 0x7E668,45,code,"\1\s3……！\w8\w8\![set,windowstate,minimize]"
 0x7E6A0,87,code,"\0\s8被嫌弃碍事了……\w8\w8\1\s0……\w8\w8别这么说啊。\w8\![set,windowstate,minimize]"
-0x7E700,74,code,"\![set,windowstate,stayontop]\0\s5嗯。\w8\w8\n\n好，我这就到前面来。"
+0x7E700,74,code,"\![set,windowstate,stayontop]\0\s5嗯。\w8\w8\n\n那，我这就到前面来。"
 0x7E754,90,code,"\![set,windowstate,!stayontop]\0\s8哎呀呀……\w8\w8碍事了吗。\w8\w8\1\s0真是悲伤的故事……"
 0x7E7C8,16,code,\1……\w8\w8唔。
 0x7E7E4,19,code,\0……\w8\w8\s1唔。
@@ -1227,7 +1227,7 @@ Offset,Length,Type,Text
 0x83578,38,code,"\![*]\q[使用率图表,rateofusegraph]\n"
 0x835A8,100,code,"\![*]\q[置顶,stayontop]／\q[常规,!stayontop]\_l[189,-]\![*]\q[重启动 Windows,On_rebootwindows]\n"
 0x83618,72,code,"\![*]\q[让开,minimize]\_l[202,-]\![*]\q[关闭 Windows,On_exitwindows]\n"
-0x8366C,35,code,"\![*]\q[不累吗？,sleepylevel]\n"
+0x8366C,35,code,"\![*]\q[累不累？,sleepylevel]\n"
 0x83698,28,code,"\![*]\q[调试,On_debug]\n"
 0x836C0,59,code,"\![*]\q[取消,cancel]\_l[250,-]\![*]\q[退出,terminate]"
 0x83704,30,code,\1\b[2]\s0……\w8\w8什么？\n\n
@@ -1243,18 +1243,18 @@ Offset,Length,Type,Text
 0x838E0,11,code,\1\s1……\e
 0x838F4,79,code,\1\s1初次见面。\w8\n\n我是BKA（德国联邦调查局）的伦格警部。\w8\0\s3……
 0x83960,31,code,\0\s0调试菜单。\n\n
-0x83988,52,code,"\![*]\q[表面重载,On_debug_reloadsurface]\n"
+0x83988,52,code,"\![*]\q[Surface重载,On_debug_reloadsurface]\n"
 0x839C8,31,code,"\![*]\q[去泡澡,On_debug_furo]\n"
-0x839F0,47,code,"\![*]\q[闲置计数1200,On_debug_houchi1200]\n"
-0x83A28,45,code,"\![*]\q[变为最困状态,On_debug_nemuku]\n"
-0x83A60,52,code,"\![*]\q[变为最不困状态,On_debug_nemukunai]\n"
-0x83AF8,29,code,\0\s0闲置计数加1200。
-0x83B50,169,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0相当累了呢……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
-0x83C20,173,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0突然精神起来了……\w8\w8\w8\w8\n\n不管几次都不习惯啊，这个。\w8\w8\1\s0嘛，反正只是强行把数据改写掉而已。
+0x839F0,47,code,"\![*]\q[闲置计数+1200,On_debug_houchi1200]\n"
+0x83A28,45,code,"\![*]\q[变成最困的状态,On_debug_nemuku]\n"
+0x83A60,52,code,"\![*]\q[变成最不困的状态,On_debug_nemukunai]\n"
+0x83AF8,29,code,\0\s0闲置计数+1200。
+0x83B50,169,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0相当累了呢……\w8\w8\w8\w8\n\n不管做多少次还是不习惯啊，这个。\w8\w8\1\s0嘛，毕竟只是强行改写数据而已嘛。
+0x83C20,173,code,\0\s6……\w8\w8好。\w8\w8\w8\w8\n\n\s0突然精神起来了……\w8\w8\w8\w8\n\n不管做多少次还是不习惯啊，这个。\w8\w8\1\s0嘛，毕竟只是强行改写数据而已嘛。
 0x83CF0,31,code,\0\s0真的要退出吗？\n\n
 0x83D18,36,code,"\![*]\q[确定,On_exitwindows_yes]\n"
 0x83D48,28,code,"\![*]\q[还是算了,cancel]\n"
-0x83DA8,33,code,\0\s0真的要重启哦？\n\n
+0x83DA8,33,code,\0\s0真的要重启吗？\n\n
 0x83DD4,38,code,"\![*]\q[确定,On_rebootwindows_yes]\n"
 0x83E38,32,code,\b[2]\0\s5实用网站。\n
 0x83E64,50,code,"\![*]\q[小樱导航,On_PortalSelected,sakuranavi]\n"
@@ -1348,8 +1348,8 @@ Offset,Length,Type,Text
 0x85428,50,code,去世了。\w8\w8\1\s0南——\w4无——。
 0x85464,46,code,变成星星了。\w8\w8\1\s0南——\w4无——。
 0x854AC,116,code,\1\s0……\w8\w8虽然有点可怜，但也没办法。\w8\w8\w8\w8\n\n下次再说吧。\w8\w8\n\n\s2再见啦……\w8\w8\-
-0x8552C,71,code,\1去泡澡的时候结束了……\w8\w8\w8\w8\w8\w8\n\n\s1行吗？\w8\w8\-
-0x8557C,30,code,\0\s0那么。\w8\1\s0再见。\w8\-
+0x8552C,71,code,\1趁泡澡的时候就要退出吗……\w8\w8\w8\w8\w8\w8\n\n\s1这样好吗？\w8\w8\-
+0x8557C,30,code,\0\s0那。\w8\1\s0再见。\w8\-
 0x855A4,115,code,\0\s0嗯。\w8\w8\n\n那么，再见啦。\w8\w8\s[-1]\b[-1]\1\s1……\w8\w8那，\w4是小樱\w4最后的声音了。\w8\-
 0x85620,77,code,\0\s7也考虑下这几分钟被叫出来的人的感受吧！\1\s1冷静点！\w8\-
 0x8568C,52,code,\0\s0…\w4…\w4…\w4…\w8\w8\s0好了好了……\w8嗯。\e
@@ -1564,7 +1564,7 @@ Offset,Length,Type,Text
 0x8F074,32,code,送过去吧……\w8\w8\n\n那个
 0x8F0A0,45,code,是……\w8好东西\w4……！\w8\w8\0\s0……
 0x8F0D8,51,code,\1\s0很久很久以前，\w4在某地，\w4住着一个老爷爷和
-0x8F114,70,code,。\w8\w8\w8\w8\0\s1……\w8\w8诶？\w8\n\n[half]结束了？
+0x8F114,70,code,。\w8\w8\w8\w8\0\s1……\w8\w8啊？\w8\n\n[half]结束了？
 0x8F164,14,code,真的特别喜欢
 0x8F17C,22,code,呢。\w8\w8
 0x8F19C,49,code,\1\s0……\w8\w8那是心理创伤造成的吧。\w8\w8
@@ -2597,7 +2597,7 @@ Offset,Length,Type,Text
 0xA4168,37,code,\0\s0前几天在人行天桥上走着的时候，
 0xA4198,183,code,在练习把猫扔到卡车车厢上……\w8\w8\1\s0……\w8\w8\w8\w8\0\n\n……\w8\w8该怎么说，\w8奇迹不发生所以才叫奇迹。\w8\w8\n\n就是那种感觉。\1\s1\n\n……
 0xA4258,28,code,\0\s0小叽\w8 炎上\1\s1……！
-0xA4280,163,code,\0\s0炭烤这种做法，总觉得有种\w8「上了一个档次」\w8的感觉呢。\w8\w8\n\n比如\w8炭烤咖啡之类的。\w8\w8\1\s0嗯。\w8\w8\w8\0\n\n那照这个搞法，\w8「炭烤
+0xA4280,163,code,\0\s0炭烤这种做法，总觉得有种\w8「上了一个档次」\w8的感觉呢。\w8\w8\n\n比如\w8炭烤咖啡之类的。\w8\w8\1\s0嗯。\w8\w8\w8\0\n\n那么，照这个搞法，\w8「炭烤
 0xA432C,27,code,」\w8听起来怎么样呢？
 0xA4350,148,code,\0\s8我不是要你道歉，虽然我这么做有点不成熟，但我气不过找了黑客朋友去开盒你的个人信息。\w8
 0xA43F0,169,code,啊，已经晚了。\w8我朋友已经开始分析了···(^^;\w8顺便说下这不是炫耀，那位朋友可是日本排名前五的高手黑客。\w8
@@ -2645,7 +2645,7 @@ Offset,Length,Type,Text
 0xA66A0,46,code,\n\n……\w8\w8因为是周日就懒散可不行。
 0xA66D8,24,code,\n\n草野不会发动！
 0xA66FC,46,code,\n\n草野发动！\w8\u\s0有田芳生也无谓地发动！\e
-0xA6734,86,code,\n\n点心时间了呢。\w8\w8\w8\n\n\s7谁啊！\w8谁决定的！\u\s1冷静点！\e
+0xA6734,86,code,\n\n到吃点心的时间了呢。\w8\w8\w8\n\n\s7谁啊！\w8谁规定的！\u\s1冷静点！\e
 0xA6794,67,code,\n\n不吃点心会死哦～。\w8\w8\w8\u……\w8\w8别撒谎啊。\e
 0xA67E0,58,code,\n\n……\w8\w8希望不是「刚起床」。\e
 0xA6824,78,code,\n\n如果是份正经的工作，现在该下班了。\w8\w8\n\n……\w8\w8如果是正经工作的话。

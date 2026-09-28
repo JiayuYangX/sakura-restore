@@ -1763,7 +1763,7 @@ def build_misaki() -> bytes:
 
 
 # ============================================================================
-# 退出崩溃修复层（现行定稿：EAT 重定向 + 延迟归还）
+# 退出崩溃修复层（定稿：EAT 重定向 + DllMain detach 归还）
 # ----------------------------------------------------------------------------
 # 背景：SSP 退出/重载时，first.dll 卸载后残留的"僵尸活动"（窗口消息派发、收尾
 #       遗留调用）会执行到已卸载模块的代码上（0x1476a/0x7474 一族）；而提前
@@ -1776,19 +1776,21 @@ def build_misaki() -> bytes:
 #      SSPMAIN 的 "dpictx" 属性；pushal/popal 间销毁两个注册窗体对象（析构
 #      触发原生存档）；随后 call 原函数完好入口并等其返回；
 #   3) 收尾例程：只做 EnumWindows 断路（WndProc 在模块范围内的窗口换成
-#      DefWindowProcA）。【不做 DPI 恢复】——线程保持 -5 直到下一次 load：
-#      这样卸载后 detach 期间内部清理/内部调用触发的"迟到存档"也读虚拟坐标
-#      （否则存档尺寸 ×1.5——务必不要在这里提前恢复）；
-#   4) 下一次 load 的 pre-stub 从 "dpictx" 属性读回旧上下文归还（同时负责
-#      "重载后 SSP 不再整体放大"）。
+#      DefWindowProcA）。【不做 DPI 恢复】——线程保持 -5 直到卸载完成：
+#      这样 detach 期间内部清理/内部调用触发的"迟到存档"也读虚拟坐标
+#      （否则存档尺寸 ×1.5——务必不要提前恢复）；
+#   4) 归还发生在 DllMain 的 DLL_PROCESS_DETACH 末尾（V7，入口 detour）：
+#      原 DllMain 跑完（迟到存档至此全部结束）后，从 SSPMAIN 的 "dpictx"
+#      属性读回旧上下文归还。触发点绑定在"本模块自己的卸载"上——重载、
+#      切到别的 SHIORI 人格、退出 SSP 全都覆盖（不依赖"下一次 load"）。
 #
 # 布局（.cave 固定偏移）：
 #   0x2400  存根 0x100（切-5+存属性 + 双销毁 + call 完好入口 + 跳收尾）
 #   0x226A  收尾例程（只断路；不恢复 DPI）
 #   0x2360  枚举回调（断路）
 #   0x23F4  上下文暂存槽 4B（存根写；供 SetPropA 转存窗口属性）
-#   0x2500  pre-stub（下一次 load 归还 DPI 上下文；load 导出指向它）
-#   0x2600  窗口类名 / 0x2630 属性名 "dpictx"
+#   0x2640  V7 归还桩 / 0x2700 V7 入口跳板（DllMain detach 归还）
+#   0x2600  窗口类名 / 0x2630 属性名 "dpictx"（卸载存根与归还桩共用）
 # ============================================================================
 EXITFIX_ENABLE = True
 EXITFIX_STUB_OFF = 0x2400        # 存根
@@ -1810,6 +1812,12 @@ _EXF_SLOT_B     = 0x4B298C       # 注册窗体槽 B（Tfirstconfigform）
 _EXF_VMT_B      = 0x468DC8
 _EXF_EXPECT_CAVE_RVA = 0xE2000   # .cave 期望 RVA（add_cave_section 的固定结果）
 
+# —— V7：DllMain DLL_PROCESS_DETACH 结束时归还 DPI 上下文（人格切换场景）——
+ENTRY_RVA = 0xAC704              # 原 DllMain 入口 RVA
+ENTRY_PROLOG = bytes.fromhex('55 8B EC 83 C4 B4')
+CTXDETACH_STUB_OFF = 0x2640      # 归还桩
+CTXDETACH_TRAMP_OFF = 0x2700     # 入口跳板（原序言 6 字节 + 跳回入口+6）
+
 
 def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
     """存根（0x80B）：切请求态 DPI 上下文 + 销毁槽 A/B + call teardown + 跳收尾例程。"""
@@ -1830,7 +1838,7 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
     b += b'\x6A\xFB'                                    # push -5（UNAWARE_GDISCALED）
     b += b'\xFF\xD0'                                    # call eax（PSET；返回旧上下文）
     b += b'\x89\x83' + C(EXITFIX_CTX_STASH)             # mov [ebx+暂存槽],eax
-    # --- V6 store: stash -> SSPMAIN window prop (session-scoped) ---
+    # --- 旧上下文经暂存槽写入 SSPMAIN 的 "dpictx" 属性（卸载期临时保存，供 V7 归还桩读回）---
     b += b'\x60'                                      # pushad
     b += b'\x6A\x00'                                  # push 0
     b += b'\x8D\x83' + C(0x2600)                     # lea eax,[class]
@@ -1875,16 +1883,17 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
 
 
 def _exitfix_post(cave_va: int) -> bytes:
-    """收尾例程：恢复线程 DPI 上下文 -> EnumWindows 断路一轮 -> 交还 SSP。"""
+    """收尾例程：EnumWindows 断路一轮 -> 交还 SSP（不做 DPI 恢复，见 V7）。"""
     pv = cave_va + EXITFIX_POST_OFF
     def L(va):
         return struct.pack('<i', va - pv)
     b = bytearray()
     b += b'\x60'                                        # pushal
     b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
-    # 不在收尾恢复 DPI 上下文（关键）：线程保持 -5 直到下一次 load 的 pre-stub 归还。
-    # 这样卸载后 detach 期间模块内部的清理/存档也读虚拟坐标（修存档尺寸 ×1.5）；
-    # 重载后的归还由 pre-stub（SSPMAIN 窗口属性）负责（防整体放大）。
+    # 不在收尾恢复 DPI 上下文（关键）：线程保持 -5，直到 DllMain 的
+    # DLL_PROCESS_DETACH 末尾由 V7 归还桩统一归还。这样 detach 期间模块
+    # 内部的清理/存档也读虚拟坐标（修存档尺寸 ×1.5）；归还点与"下一个
+    # 加载谁"解耦（重载/切人格/退出全覆盖，防整体放大）。
     # .skip:
     b += b'\x6A\x00'                                    # push 0 （lParam）
     b += b'\x8D\x83' + L(cave_va + EXITFIX_CB_OFF)      # lea eax,[ebx+cb]
@@ -1992,79 +2001,144 @@ def patch_exit_fix(data: bytearray) -> bytearray:
 
     # —— 说明：不改导出表 EAT。SSP 经导出表调用到原入口 0xAA234，
     #         再由上面的入口内联跳转进入存根（与验证版设计一致）。
-    # --- V6: load pre-stub (restore leaked DPI ctx from window property) ---
-    import struct as _st6
-    PS_OFF = 0x2500
-    ps_va = cave_va + PS_OFF
-    psb = bytearray()
-    psfix = []
-    pslab = {}
-    def PL(va):
-        return _st6.pack('<i', va - (ps_va + 5))
-    def PLAB(name):
-        pslab[name] = len(psb)
-    def PJNZ(name):
-        psb.append(0x75); psfix.append((len(psb), name)); psb.append(0)
-    def PJZ(name):
-        psb.append(0x74); psfix.append((len(psb), name)); psb.append(0)
-    psb += b'\xE8\x00\x00\x00\x00\x5B'                # call $+5; pop ebx
-    psb += b'\x60'                                      # pushad
-    psb += b'\x8B\x83' + PL(cave_va + EXITFIX_PSET_OFF)  # mov eax,[pset]
-    psb += b'\x85\xC0'
-    PJNZ('have')
-    psb += b'\x8D\x83' + PL(cave_va + 0xB4)             # lea eax,[user32.dll]
-    psb += b'\x50'
-    psb += b'\xFF\x93' + PL(0x4B31E4)                   # call [GMH]
-    psb += b'\x85\xC0'
-    PJZ('out')
-    psb += b'\x8D\x93' + PL(cave_va + 0xC0)             # lea edx,[SetThreadDpiAwarenessContext]
-    psb += b'\x52'
-    psb += b'\x50'
-    psb += b'\xFF\x93' + PL(0x4B31E0)                   # call [GPA]
-    psb += b'\x85\xC0'
-    PJZ('out')
-    psb += b'\x89\x83' + PL(cave_va + EXITFIX_PSET_OFF)  # mov [pset],eax
-    PLAB('have')
-    psb += b'\x6A\x00'                                  # push 0
-    psb += b'\x8D\x83' + PL(cave_va + 0x2600)           # lea eax,[class]
-    psb += b'\x50'
-    psb += b'\xFF\x93' + PL(0x4B3704)                   # call [FindWindowA]
-    psb += b'\x85\xC0'
-    PJZ('out')
-    psb += b'\x8D\x93' + PL(cave_va + 0x2630)           # lea edx,[prop]
-    psb += b'\x52'
-    psb += b'\x50'
-    psb += b'\xFF\x93' + PL(0x4B368C)                   # call [GetPropA]
-    psb += b'\x85\xC0'
-    PJZ('out')
-    psb += b'\x8B\x93' + PL(cave_va + EXITFIX_PSET_OFF)  # mov edx,[pset]
-    psb += b'\x85\xD2'
-    PJZ('out')
-    psb += b'\x50'                                      # push eax
-    psb += b'\xFF\xD2'                                  # call edx
-    PLAB('out')
-    psb += b'\x61'                                      # popad
-    here2 = ps_va + len(psb)
-    psb += b'\xE9' + _st6.pack('<i', (cave_va + 0x1F7C) - (here2 + 5))
-    for pos, name in psfix:
-        psb[pos] = (pslab[name] - (pos + 1)) & 0xFF
-    assert len(psb) <= 0xF0, len(psb)
-    if any(data[cave_raw + PS_OFF: cave_raw + PS_OFF + 0xF0]):
-        raise RuntimeError('V6 pre-stub area not free')
-    data[cave_raw + PS_OFF: cave_raw + PS_OFF + len(psb)] = psb
+    # —— 归还统一由 V7（patch_ctx_return_on_detach，DllMain detach 归还）负责 ——
+    # load 导出保持指向 load 包装（cave+0x1F7C）；此处只写归还所需的类名/属性名。
     data[cave_raw + 0x2600: cave_raw + 0x2600 + 45] = b'SSPMAIN-3145fdab-2ee0-4158-a1ce-832b553ad790\x00'
     data[cave_raw + 0x2630: cave_raw + 0x2630 + 7] = b'dpictx\x00'
-    _erva = _u32(data, opt + 96)
-    _ef = rva_off(_erva)
-    _af = _u32(data, _ef + 28)
-    _fo = rva_off(_af)
-    _lo = _fo + 1 * 4
-    if _u32(data, _lo) != cave_rva + 0x1F7C:
-        raise RuntimeError('V6: load EAT != wrap, got 0x%X' % _u32(data, _lo))
-    _st6.pack_into('<I', data, _lo, cave_rva + PS_OFF)
-    print('V6 applied: pre-stub @cave+0x%X (%d bytes), store in stub, load EAT redirected' % (PS_OFF, len(psb)))
+    _er = _u32(data, opt + 96)
+    _efo = rva_off(_er)
+    _efun = rva_off(_u32(data, _efo + 28))
+    if _u32(data, _efun + 1 * 4) != cave_rva + 0x1F7C:
+        raise RuntimeError('load EAT 应为 load 包装 0x1F7C，实为 0x%X' % _u32(data, _efun + 1 * 4))
     print('退出崩溃修复层已应用: 存根(含DPI上下文切换)+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
           % (EXITFIX_STUB_OFF, EXITFIX_POST_OFF, EXITFIX_CB_OFF))
+    return data
+
+
+def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
+    """V7：DllMain 的 DLL_PROCESS_DETACH 走完后归还线程 DPI 上下文。
+
+    归还必须同时满足两点：①晚于所有"迟到存档"（否则存档 ×1.5）；
+    ②不依赖"下一次加载谁"（否则切换人格时线程残留 GDISCALED(-5)，
+    之后新建的窗口/UI 全被 GDI 放大）。
+    DLL_PROCESS_DETACH 末尾正好同时满足：它是本模块卸载的最后一刻
+    （原 DllMain 已跑完、存档已结束），且卸载必然触发、与下一个加载者无关。
+    实现：入口 detour —— pushad 后以调用方式执行原 DllMain（保存返回值），
+    reason==0 时从 SSPMAIN 的 "dpictx" 属性读回旧上下文并归还。"""
+    import struct as _st
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt = e + 24
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva != _EXF_EXPECT_CAVE_RVA:
+        raise RuntimeError('ctxdetach：.cave 不符')
+    cave_va = 0x400000 + cave_rva
+
+    def rva_off(rva):
+        for i in range(nsec):
+            off = sec + 40 * i
+            va = _u32(data, off + 12)
+            vsz = _u32(data, off + 8)
+            if va <= rva < va + vsz:
+                return _u32(data, off + 20) + (rva - va)
+        raise RuntimeError('ctxdetach：RVA 0x%X 不在节' % rva)
+
+    if any(data[cave_raw + CTXDETACH_STUB_OFF:cave_raw + CTXDETACH_TRAMP_OFF]):
+        raise RuntimeError('ctxdetach：桩区 @cave+0x%X 非零' % CTXDETACH_STUB_OFF)
+    if any(data[cave_raw + CTXDETACH_TRAMP_OFF:cave_raw + CTXDETACH_TRAMP_OFF + 0x10]):
+        raise RuntimeError('ctxdetach：跳板区 @cave+0x%X 非零' % CTXDETACH_TRAMP_OFF)
+    efo = rva_off(ENTRY_RVA)
+    if bytes(data[efo:efo + len(ENTRY_PROLOG)]) != ENTRY_PROLOG:
+        raise RuntimeError('ctxdetach：入口序言不符 %s' % bytes(data[efo:efo + 8]).hex(' '))
+
+    stub_va = cave_va + CTXDETACH_STUB_OFF
+    tramp_va = cave_va + CTXDETACH_TRAMP_OFF
+    entry_va = 0x400000 + ENTRY_RVA
+    b = bytearray()
+    fix = []
+    lab = {}
+
+    def LAB(n):
+        lab[n] = len(b)
+
+    def RJ(op, n):
+        b.append(op); fix.append((len(b), n)); b.append(0)
+
+    anchor = stub_va + 5
+
+    def AL(va):
+        return _st.pack('<i', va - anchor)
+
+    def C(off):
+        return AL(cave_va + off)
+
+    b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx
+    b += b'\x60'                                        # pushad
+    b += b'\xFF\x74\x24\x2C'                            # push [esp+0x2C] lpReserved
+    b += b'\xFF\x74\x24\x2C'                            # push [esp+0x2C] fdwReason
+    b += b'\xFF\x74\x24\x2C'                            # push [esp+0x2C] hinst
+    b += b'\x8D\x83' + C(CTXDETACH_TRAMP_OFF)           # lea eax,[跳板]
+    b += b'\xFF\xD0'                                    # call eax（原 DllMain 全程）
+    b += b'\x89\x44\x24\x1C'                            # mov [esp+0x1C],eax（保存返回值）
+    b += b'\x8B\x44\x24\x28'                            # mov eax,[esp+0x28] fdwReason
+    b += b'\x85\xC0'                                    # test eax,eax
+    RJ(0x75, 'done')                                    # jnz .done（非 DETACH 跳过）
+    # —— 归还 DPI 上下文（与 load 包装桩相同的调用序列）——
+    b += b'\x8B\x83' + C(EXITFIX_PSET_OFF)              # mov eax,[pset]
+    b += b'\x85\xC0'
+    RJ(0x75, 'have')                                    # jnz .have
+    b += b'\x8D\x83' + C(0xB4)                          # lea eax,[user32.dll]
+    b += b'\x50'
+    b += b'\xFF\x93' + AL(0x4B31E4)                     # call [GMH]
+    b += b'\x85\xC0'
+    RJ(0x74, 'out')                                     # jz .out
+    b += b'\x8D\x93' + C(0xC0)                          # lea edx,[SetThreadDpiAwarenessContext]
+    b += b'\x52\x50'
+    b += b'\xFF\x93' + AL(0x4B31E0)                     # call [GPA]
+    b += b'\x85\xC0'
+    RJ(0x74, 'out')
+    b += b'\x89\x83' + C(EXITFIX_PSET_OFF)              # mov [pset],eax
+    LAB('have')
+    b += b'\x6A\x00'                                    # push 0
+    b += b'\x8D\x83' + C(0x2600)                        # lea eax,[类名]
+    b += b'\x50'
+    b += b'\xFF\x93' + AL(0x4B3704)                     # call [FindWindowA]
+    b += b'\x85\xC0'
+    RJ(0x74, 'out')
+    b += b'\x8D\x93' + C(0x2630)                        # lea edx,[属性名]
+    b += b'\x52\x50'
+    b += b'\xFF\x93' + AL(0x4B368C)                     # call [GetPropA]
+    b += b'\x85\xC0'
+    RJ(0x74, 'out')
+    b += b'\x8B\x93' + C(EXITFIX_PSET_OFF)              # mov edx,[pset]
+    b += b'\x85\xD2'
+    RJ(0x74, 'out')
+    b += b'\x50'                                        # push eax（旧上下文）
+    b += b'\xFF\xD2'                                    # call edx（归还）
+    LAB('out')
+    LAB('done')
+    b += b'\x61'                                        # popad
+    b += b'\xC2\x0C\x00'                                # ret 12
+    for pos, name in fix:
+        off = lab[name] - (pos + 1)
+        if not (-128 <= off <= 127):
+            raise RuntimeError('ctxdetach：短跳超出范围 %s' % name)
+        b[pos] = off & 0xFF
+    if len(b) > CTXDETACH_TRAMP_OFF - CTXDETACH_STUB_OFF:
+        raise RuntimeError('ctxdetach：桩过长 %d' % len(b))
+    data[cave_raw + CTXDETACH_STUB_OFF:cave_raw + CTXDETACH_STUB_OFF + len(b)] = b
+    tramp = ENTRY_PROLOG + b'\xE9' + _st.pack('<i', (entry_va + len(ENTRY_PROLOG)) - (tramp_va + len(ENTRY_PROLOG) + 5))
+    data[cave_raw + CTXDETACH_TRAMP_OFF:cave_raw + CTXDETACH_TRAMP_OFF + len(tramp)] = tramp
+    data[efo:efo + 6] = b'\xE9' + _st.pack('<i', stub_va - (entry_va + 5)) + b'\x90'
+    print('V7 applied: DllMain detach 归还 (桩 cave+0x%X %dB, 跳板 cave+0x%X)'
+          % (CTXDETACH_STUB_OFF, len(b), CTXDETACH_TRAMP_OFF))
     return data
 
 
@@ -2173,6 +2247,8 @@ data = patch_aitxt(data)
 
 
 data = patch_exit_fix(data)
+
+data = patch_ctx_return_on_detach(data)
 
 os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:
