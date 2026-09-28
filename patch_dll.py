@@ -2156,7 +2156,8 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #   2) gdi32!SelectObject 入口钩：返回地址 ∈ msctf+{0xE40ED,0xE413C,0xE3EEA,0xE3F0F} 或
 #      对象==缓存源字体 → 替换为自建 ×f 字体（惰性创建、两句柄缓存）；同一门控。
 #   3) msctf+0x47A8A（SetWindowPos 调用点）桩：偏移补偿 x' = O + f·(x−O)（O=0 跳过）。
-#   动态因子：每次 GetDpiForSystem()/96；缺失或 96dpi 时因子=1（全恒等 no-op，兼容 MATERIA）。
+#   动态因子：线程临时尖峰 PMv2 → GetDpiForMonitor 实测系统 DPI/96（实时跟随切档）；
+#   96dpi 时因子=1（全恒等 no-op，兼容 MATERIA）。
 #   装配：load 导出 EAT 重定向到"载入包装"（call 安装例程后转原包装）；unload 同理先还原再转；
 #   目标函数经 GetModuleHandleA/GetProcAddress 于安装时解析（IAT 槽 0x4B31E4/0x4B31E0）。
 # cave 布局（0x2810 起）：数据 0x2810-0x28FF | CTS 桩 0x2A00 | SEL 桩 0x2C00 | CS 桩 0x3000 |
@@ -2170,7 +2171,10 @@ IME_PTR_FOCUS = 0x0C
 IME_PTR_GDPI = 0x10
 IME_PTR_GOBJ = 0x14
 IME_PTR_CFIW = 0x18
-IME_PTR_GDPS = 0x1C
+IME_PTR_STDA = 0xFC    # user32!SetThreadDpiAwarenessContext
+IME_PTR_MFP = 0x08     # user32!MonitorFromPoint
+IME_PTR_GPFM = 0x3C   # shcore!GetDpiForMonitor
+IME_PTR_LL = 0x40     # kernel32!LoadLibraryA
 IME_PTR_VPROT = 0x20
 IME_MSCTF_BASE = 0x24
 IME_FLAGS = 0x28
@@ -2195,6 +2199,7 @@ IME_CT1 = 0xE0
 IME_CT2 = 0xE4
 IME_CT3 = 0xE8
 IME_SELCTR = 0xEC
+IME_CACHEF = 0xCC      # 缓存创建时的因子（变化则失效重建）
 IME_VPOLD = 0xF0
 IME_T5_CTS = 0xF4
 IME_T5_SEL = 0xF8
@@ -2225,7 +2230,8 @@ GMH_IAT = 0x4B31E4
 IME_STR_BLOB = (b'user32.dll\x00' b'gdi32.dll\x00' b'msctf.dll\x00'
                 b'kernel32.dll\x00' b'ClientToScreen\x00' b'SelectObject\x00'
                 b'GetFocus\x00' b'GetDpiForWindow\x00'
-                b'GetDpiForSystem\x00' b'GetObjectW\x00' b'CreateFontIndirectW\x00'
+                b'SetThreadDpiAwarenessContext\x00' b'MonitorFromPoint\x00' b'GetDpiForMonitor\x00'
+                b'shcore.dll\x00' b'LoadLibraryA\x00' b'GetObjectW\x00' b'CreateFontIndirectW\x00'
                 b'VirtualProtect\x00')
 
 def _ime_str_off(name):
@@ -2240,7 +2246,11 @@ IME_S_CTS = _ime_str_off(b'ClientToScreen')
 IME_S_SEL = _ime_str_off(b'SelectObject')
 IME_S_FOCUS = _ime_str_off(b'GetFocus')
 IME_S_GDPI = _ime_str_off(b'GetDpiForWindow')
-IME_S_GDPS = _ime_str_off(b'GetDpiForSystem')
+IME_S_STDA = _ime_str_off(b'SetThreadDpiAwarenessContext')
+IME_S_MFP = _ime_str_off(b'MonitorFromPoint')
+IME_S_GPFM = _ime_str_off(b'GetDpiForMonitor')
+IME_S_SHCORE = _ime_str_off(b'shcore.dll')
+IME_S_LL = _ime_str_off(b'LoadLibraryA')
 IME_S_GOBJ = _ime_str_off(b'GetObjectW')
 IME_S_CFIW = _ime_str_off(b'CreateFontIndirectW')
 IME_S_VPROT = _ime_str_off(b'VirtualProtect')
@@ -2303,13 +2313,42 @@ class _IB:
         return bytes(self.b)
 
 
-def _ime_factor_refresh(o, data_va):
-    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_GDPS)
+def _ime_factor_refresh(o, data_va, tag=''):
+    # 线程上下文尖峰到 PMv2 -> GetDpiForMonitor（唯一实时跟随系统缩放的来源）
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_STDA)     # SetThreadDpiAwarenessContext
     o.raw(b'\x85\xC0')
-    o.j8(0x74, 'nof')
-    o.raw(b'\xFF\xD0')
+    o.j8(0x74, 'nof' + tag)
+    o.raw(b'\x6A\xFC')                               # push -4 (PER_MONITOR_AWARE)
+    o.raw(b'\xFF\xD0')                               # -> 旧上下文
+    o.raw(b'\x50')                                    # 暂存
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_MFP)      # MonitorFromPoint
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'done2' + tag)
+    o.raw(b'\x6A\x02\x6A\x00\x6A\x00')           # push 2; push y; push x
+    o.raw(b'\xFF\xD0')                               # -> hm
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'done2' + tag)
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_PTR_GPFM)       # ecx = GetDpiForMonitor
+    o.raw(b'\x85\xC9')
+    o.j8(0x74, 'done2' + tag)
+    o.raw(b'\x8D\x93'); o.d32(data_va + IME_BUF + 4)        # lea edx,[BUF+4] = &dy
+    o.raw(b'\x52')                                    # push &dy（第4参）
+    o.raw(b'\x8D\x93'); o.d32(data_va + IME_BUF)            # lea edx,[BUF] = &dx
+    o.raw(b'\x52\x6A\x00')                          # push &dx（第3参）; push 0（第2参 dpiType）
+    o.raw(b'\x50')                                    # push hm（第1参）
+    o.raw(b'\xFF\xD1')                               # call ecx
+    o.raw(b'\x85\xC0')
+    o.j8(0x75, 'done1' + tag)
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_BUF)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'done1' + tag)
     o.raw(b'\x89\x83'); o.d32(data_va + IME_FNUM)
-    o.mark('nof')
+    o.mark('done1' + tag)
+    o.mark('done2' + tag)
+    o.raw(b'\x58')                                    # pop 旧上下文
+    o.raw(b'\x50')                                    # push 旧上下文
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_STDA); o.raw(b'\xFF\xD0')
+    o.mark('nof' + tag)
     o.raw(b'\xC7\x83'); o.d32(data_va + IME_FDEN); o.raw(b'\x60\x00\x00\x00')
 
 
@@ -2381,6 +2420,17 @@ def _ime_sel_stub(stub_va, data_va, tr_va):
     o = _IB(stub_va + 6)
     o.raw(b'\x60')
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    # 桩顶：因子刷新 + 缓存失效（倍率变化后即使命中旧源句柄也能重建新字号）
+    _ime_factor_refresh(o, data_va, '_t')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_FNUM)
+    o.raw(b'\x3B\x83'); o.d32(data_va + IME_CACHEF)
+    o.j8(0x74, 'cf_top')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_CACHEF)
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_SRC1); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_DST1); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_SRC2); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_DST2); o.raw(b'\x00\x00\x00\x00')
+    o.mark('cf_top')
     o.raw(b'\x8B\x54\x24\x20')
     for slot in (IME_C1, IME_C2, IME_C3, IME_C4):
         o.raw(b'\x3B\x93'); o.d32(data_va + slot)
@@ -2421,6 +2471,16 @@ def _ime_sel_stub(stub_va, data_va, tr_va):
     o.raw(b'\x83\xF8\x60')
     o.jc32(0x85, 'plain')
     _ime_factor_refresh(o, data_va)
+    # 因子变化 → 字体缓存失效（重建为新因子字号）
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_FNUM)
+    o.raw(b'\x3B\x83'); o.d32(data_va + IME_CACHEF)
+    o.j8(0x74, 'cf_ok')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_CACHEF)
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_SRC1); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_DST1); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_SRC2); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_DST2); o.raw(b'\x00\x00\x00\x00')
+    o.mark('cf_ok')
     o.raw(b'\x8B\x74\x24\x28')
     o.raw(b'\x85\xF6')
     o.jc32(0x84, 'plain')
@@ -2504,6 +2564,7 @@ def _ime_cs_stub(stub_va, data_va, tr_va):
 
     o.raw(b'\x60')
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    _ime_factor_refresh(o, data_va)
     o.raw(b'\x8B\x93'); o.d32(data_va + IME_OX)
     o.raw(b'\x8B\x8B'); o.d32(data_va + IME_OY)
     o.raw(b'\x8B\xC2')
@@ -2615,7 +2676,8 @@ def _ime_install_build(ta_va, data_va):
     ro(IME_S_CTS, IME_PTR_CTS)
     ro(IME_S_FOCUS, IME_PTR_FOCUS)
     ro(IME_S_GDPI, IME_PTR_GDPI)
-    ro(IME_S_GDPS, IME_PTR_GDPS)
+    ro(IME_S_STDA, IME_PTR_STDA)
+    ro(IME_S_MFP, IME_PTR_MFP)
     o.mark('no_u32')
     gmh(IME_S_GDI32); o.j8(0x74, 'no_g32')
     ro(IME_S_SEL, IME_PTR_SEL)
@@ -2636,18 +2698,25 @@ def _ime_install_build(ta_va, data_va):
     o.mark('no_m32')
     gmh(IME_S_KERNEL); o.j8(0x74, 'no_k32')
     ro(IME_S_VPROT, IME_PTR_VPROT)
+    ro(IME_S_LL, IME_PTR_LL)
+    gmh(IME_S_SHCORE)
+    o.j8(0x75, 'got_h')
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + IME_S_SHCORE)
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_LL))
+    o.raw(b'\x8B\xF0\x85\xF6')
+    o.j8(0x74, 'no_shcore')
+    o.mark('got_h')
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + IME_S_GPFM)
+    o.raw(b'\x50\x56')
+    o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
+    o.raw(b'\x89\x83'); o.d32(d(IME_PTR_GPFM))
+    o.mark('no_shcore')
     o.mark('no_k32')
     o.mark('resolved')
     o.raw(b'\xC7\x83'); o.d32(d(IME_FNUM)); o.raw(b'\x60\x00\x00\x00')
     o.raw(b'\xC7\x83'); o.d32(d(IME_FDEN)); o.raw(b'\x60\x00\x00\x00')
-    o.raw(b'\x8B\x83'); o.d32(d(IME_PTR_GDPS))
-    o.raw(b'\x85\xC0')
-    o.j8(0x74, 'no_gdps')
-    o.raw(b'\xFF\xD0')
-    o.raw(b'\x85\xC0')
-    o.j8(0x74, 'no_gdps')
-    o.raw(b'\x89\x83'); o.d32(d(IME_FNUM))
-    o.mark('no_gdps')
+    _ime_factor_refresh(o, data_va)
 
     def emit_hook(idx, flag_off, ptr_slot, stub_off, orig_off, t5_off, cs_mode):
         mk = 'sk%d' % idx
