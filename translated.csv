@@ -2882,10 +2882,10 @@ Offset,Length,Type,Text
 0xD6BB0,8,rsrc,吵死了
 0xD6BF0,12,rsrc,对话频率(&A)
 0xD6C4B,2,rsrc,静
-0xD6C8E,10,rsrc,古隆基语
+0xD6C8E,10,rsrc,古朗基语
 0xD6DCB,6,rsrc,重力语
-0xD6E1A,4,rsrc,女语
-0xD6E6A,10,rsrc,平田语
+0xD6E1A,4,rsrc,喵语
+0xD6E6A,10,rsrc,Hintabo语
 0xD6EA1,6,rsrc,监控
 0xD6EF8,16,rsrc,模拟时钟(&C)
 0xD6F6F,8,rsrc,时钟(&W)

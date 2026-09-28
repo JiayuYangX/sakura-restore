@@ -97,6 +97,9 @@ PATCHES = [
 ]
 
 
+IME_ENABLE = True
+
+
 def apply_patches(data: bytes) -> bytes:
     out = data
     for off, orig, repl in PATCHES:
@@ -943,7 +946,7 @@ def _build_dc_status_stub(rva):
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
     游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(0x2800)
+    blob = bytearray(IME_CAVE_SIZE)  # 原 0x2800，IME 层扩至 0x4000
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -2142,6 +2145,671 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
     return data
 
 
+# ============================================================ IME 修复层（新版微软拼音）
+# 现象与根因（详见 docs/窗口分析及修复.md 第 9 节）：
+#   GDISCALED(96dpi 虚拟)窗口下：候选框位置 ×f 偏移、组字窗字体过小/尺寸不随文自适应、相对偏移。
+#   根因：MSCTF 按虚拟坐标计算锚点而候选由宿主按物理像素摆放；组字窗绘制用缓存字体
+#        （[obj+0x18C/0x194]，只在"字体设置事件"重建），测量读数只喂布局。
+# 最终方法（三钩子 + 载入安装/卸载还原，全部 .cave 内，位置无关）：
+#   1) user32!ClientToScreen 入口钩：返回地址 ∈ msctf+{0xE55D1,0xE55DD,0xEB083} → 输出 ÷f；
+#      EB083 记录原始输出为原点 O；焦点窗口 GetDpiForWindow==96 门控。
+#   2) gdi32!SelectObject 入口钩：返回地址 ∈ msctf+{0xE40ED,0xE413C,0xE3EEA,0xE3F0F} 或
+#      对象==缓存源字体 → 替换为自建 ×f 字体（惰性创建、两句柄缓存）；同一门控。
+#   3) msctf+0x47A8A（SetWindowPos 调用点）桩：偏移补偿 x' = O + f·(x−O)（O=0 跳过）。
+#   动态因子：每次 GetDpiForSystem()/96；缺失或 96dpi 时因子=1（全恒等 no-op，兼容 MATERIA）。
+#   装配：load 导出 EAT 重定向到"载入包装"（call 安装例程后转原包装）；unload 同理先还原再转；
+#   目标函数经 GetModuleHandleA/GetProcAddress 于安装时解析（IAT 槽 0x4B31E4/0x4B31E0）。
+# cave 布局（0x2810 起）：数据 0x2810-0x28FF | CTS 桩 0x2A00 | SEL 桩 0x2C00 | CS 桩 0x3000 |
+#   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3600 | hook1 0x36E0 | unhook1 0x3760 |
+#   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x4000）
+
+IME_BASE_OFF = 0x2810
+IME_PTR_CTS = 0x00
+IME_PTR_SEL = 0x04
+IME_PTR_FOCUS = 0x0C
+IME_PTR_GDPI = 0x10
+IME_PTR_GOBJ = 0x14
+IME_PTR_CFIW = 0x18
+IME_PTR_GDPS = 0x1C
+IME_PTR_VPROT = 0x20
+IME_MSCTF_BASE = 0x24
+IME_FLAGS = 0x28
+IME_ORIG_CTS = 0x2C
+IME_ORIG_SEL = 0x34
+IME_ORIG_CS = 0x44
+IME_FNUM = 0x4C
+IME_FDEN = 0x50
+IME_OX = 0x54
+IME_OY = 0x58
+IME_SRC1 = 0x5C
+IME_DST1 = 0x60
+IME_SRC2 = 0x64
+IME_DST2 = 0x68
+IME_SCRATCH = 0x6C
+IME_BUF = 0x70
+IME_C1 = 0xD0
+IME_C2 = 0xD4
+IME_C3 = 0xD8
+IME_C4 = 0xDC
+IME_CT1 = 0xE0
+IME_CT2 = 0xE4
+IME_CT3 = 0xE8
+IME_SELCTR = 0xEC
+IME_VPOLD = 0xF0
+IME_T5_CTS = 0xF4
+IME_T5_SEL = 0xF8
+
+IME_STUB_CTS = 0x2A00
+IME_STUB_SEL = 0x2C00
+IME_STUB_CS = 0x3000
+IME_TR_CTS = 0x3200     # 12B（8B FF 55 8B EC / FF B3 disp / C3）
+IME_TR_SEL = 0x320C
+IME_TR_CS = 0x3250      # 运行时填充（原 6B + E9 回）
+IME_INSTALL = 0x3300
+IME_RESTORE = 0x3600
+IME_WRAP_LOAD = 0x3800
+IME_WRAP_UNLOAD = 0x3840
+IME_STR = 0x3900
+IME_CAVE_SIZE = 0x4000
+IME_HOOK1 = 0x36E0
+IME_UNHOOK1 = 0x3760
+IME_LOAD_WRAP_ORIG = 0x1F7C
+IME_UNLOAD_STUB_ORIG = 0x2400
+# ---- 后半 ----
+
+
+GPA_IAT = 0x4B31E0
+GMH_IAT = 0x4B31E4
+
+# 字符串偏移由 _ime_str_off 自动计算（见 IME_STR_BLOB 之后）
+IME_STR_BLOB = (b'user32.dll\x00' b'gdi32.dll\x00' b'msctf.dll\x00'
+                b'kernel32.dll\x00' b'ClientToScreen\x00' b'SelectObject\x00'
+                b'GetFocus\x00' b'GetDpiForWindow\x00'
+                b'GetDpiForSystem\x00' b'GetObjectW\x00' b'CreateFontIndirectW\x00'
+                b'VirtualProtect\x00')
+
+def _ime_str_off(name):
+    return IME_STR_BLOB.index(name + b'\x00')
+
+
+IME_S_USER32 = _ime_str_off(b'user32.dll')
+IME_S_GDI32 = _ime_str_off(b'gdi32.dll')
+IME_S_MSCTF = _ime_str_off(b'msctf.dll')
+IME_S_KERNEL = _ime_str_off(b'kernel32.dll')
+IME_S_CTS = _ime_str_off(b'ClientToScreen')
+IME_S_SEL = _ime_str_off(b'SelectObject')
+IME_S_FOCUS = _ime_str_off(b'GetFocus')
+IME_S_GDPI = _ime_str_off(b'GetDpiForWindow')
+IME_S_GDPS = _ime_str_off(b'GetDpiForSystem')
+IME_S_GOBJ = _ime_str_off(b'GetObjectW')
+IME_S_CFIW = _ime_str_off(b'CreateFontIndirectW')
+IME_S_VPROT = _ime_str_off(b'VirtualProtect')
+
+MSCTF_CTS_SITES = (0xE55D1, 0xE55DD, 0xEB083)
+MSCTF_SEL_SITES = (0xE40ED, 0xE413C, 0xE3EEA, 0xE3F0F)
+MSCTF_CS_SITE = 0x47A8A
+
+
+class _IB:
+    def __init__(self, base_va):
+        self.b = bytearray()
+        self.base = base_va
+        self.disp = []
+        self.rel8 = []
+        self.rel32 = []
+        self.calls = []
+        self.marks = {}
+
+    def call_va(self, va):
+        self.b += b'\xE8'
+        self.calls.append((len(self.b), va))
+        self.b += b'\x00' * 4
+
+    def raw(self, d):
+        self.b += d
+
+    def d32(self, va):
+        self.disp.append((len(self.b), va))
+        self.b += b'\x00' * 4
+
+    def j8(self, op, mk):
+        self.b += bytes([op, 0])
+        self.rel8.append((len(self.b) - 1, mk))
+
+    def j32(self, mk):
+        self.b += b'\xE9'
+        self.rel32.append((len(self.b), mk))
+        self.b += b'\x00' * 4
+
+    def jc32(self, op2, mk):
+        self.b += bytes([0x0F, op2])
+        self.rel32.append((len(self.b), mk))
+        self.b += b'\x00' * 4
+
+    def mark(self, mk):
+        self.marks[mk] = len(self.b)
+
+    def finish(self):
+        for pos, va in self.disp:
+            struct.pack_into('<i', self.b, pos, va - self.base)
+        for pos, mk in self.rel8:
+            o = self.marks[mk] - (pos + 1)
+            assert -128 <= o <= 127, ('rel8', mk, o)
+            self.b[pos] = o & 0xFF
+        for pos, mk in self.rel32:
+            struct.pack_into('<i', self.b, pos, self.marks[mk] - (pos + 4))
+        for pos, va in self.calls:
+            struct.pack_into('<i', self.b, pos, va - (self.base + pos - 2))
+        return bytes(self.b)
+
+
+def _ime_factor_refresh(o, data_va):
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_GDPS)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'nof')
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_FNUM)
+    o.mark('nof')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_FDEN); o.raw(b'\x60\x00\x00\x00')
+
+
+def _ime_cts_stub(stub_va, data_va, tr_va):
+    o = _IB(stub_va + 6)
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x54\x24\x20')
+    o.raw(b'\x33\xC9')
+    for i, slot in enumerate((IME_CT1, IME_CT2, IME_CT3)):
+        if i:
+            o.raw(b'\xB1' + bytes([i]))
+        o.raw(b'\x3B\x93'); o.d32(data_va + slot)
+        o.j8(0x74, 'match')
+    o.j32('plain')
+    o.mark('match')
+    o.raw(b'\x89\x8B'); o.d32(data_va + IME_SCRATCH)
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'fclr')
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
+    o.raw(b'\x83\xF8\x60')
+    o.j8(0x74, 'fres')
+    o.mark('fclr')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_OX); o.raw(b'\x00\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(data_va + IME_OY); o.raw(b'\x00\x00\x00\x00')
+    o.j32('plain')
+    o.mark('fres')
+    _ime_factor_refresh(o, data_va)
+    o.raw(b'\xFF\x74\x24\x28')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.raw(b'\x8D\x83'); o.d32(tr_va)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x44\x24\x1C')
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_SCRATCH)
+    o.raw(b'\x83\xF9\x02')
+    o.raw(b'\x8B\x74\x24\x28')
+    o.j8(0x75, 'noO')
+    o.raw(b'\x8B\x06')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_OX)
+    o.raw(b'\x8B\x46\x04')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_OY)
+    o.mark('noO')
+    for off in (0, 4):
+        o.raw(b'\x8B\x46' + bytes([off]))
+        o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FDEN)
+        o.raw(b'\x0F\xAF\xC1')
+        o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FNUM)
+        o.raw(b'\x8B\xD1')
+        o.raw(b'\xD1\xEA')
+        o.raw(b'\x03\xC2')
+        o.raw(b'\x33\xD2')
+        o.raw(b'\xF7\xF1')
+        o.raw(b'\x89\x46' + bytes([off]))
+    o.j32('done')
+    o.mark('plain')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.raw(b'\x8D\x83'); o.d32(tr_va)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x44\x24\x1C')
+    o.mark('done')
+    o.raw(b'\x61\xC2\x08\x00')
+    return o.finish()
+
+
+def _ime_sel_stub(stub_va, data_va, tr_va):
+    o = _IB(stub_va + 6)
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x54\x24\x20')
+    for slot in (IME_C1, IME_C2, IME_C3, IME_C4):
+        o.raw(b'\x3B\x93'); o.d32(data_va + slot)
+        o.j8(0x74, 'hit')
+    o.jc32(0x85, 'hit3')
+    o.mark('hit')
+    o.raw(b'\x8B\x74\x24\x28')
+    o.raw(b'\x85\xF6')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x3B\xB3'); o.d32(data_va + IME_SRC1)
+    o.jc32(0x84, 'hit2')
+    o.raw(b'\x3B\xB3'); o.d32(data_va + IME_SRC2)
+    o.jc32(0x84, 'hit2')
+    o.j32('gate')
+    o.mark('hit3')
+    o.raw(b'\x8B\x74\x24\x28')
+    o.raw(b'\x85\xF6')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x3B\xB3'); o.d32(data_va + IME_SRC1)
+    o.jc32(0x84, 'hit2')
+    o.raw(b'\x3B\xB3'); o.d32(data_va + IME_SRC2)
+    o.jc32(0x84, 'hit2')
+    o.j32('plain')
+    o.mark('hit2')
+    o.raw(b'\x3B\xB3'); o.d32(data_va + IME_SRC1)
+    o.jc32(0x85, 'h2b')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_DST1)
+    o.j32('dopush')
+    o.mark('h2b')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_DST2)
+    o.j32('dopush')
+    o.mark('gate')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
+    o.raw(b'\x83\xF8\x60')
+    o.jc32(0x85, 'plain')
+    _ime_factor_refresh(o, data_va)
+    o.raw(b'\x8B\x74\x24\x28')
+    o.raw(b'\x85\xF6')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_SRC1)
+    o.raw(b'\x3B\xC6')
+    o.j8(0x75, 'chk2')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_DST1)
+    o.j32('dopush')
+    o.mark('chk2')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_SRC2)
+    o.raw(b'\x3B\xC6')
+    o.j8(0x75, 'create')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_DST2)
+    o.j32('dopush')
+    o.mark('create')
+    o.raw(b'\x8D\x83'); o.d32(data_va + IME_BUF)
+    o.raw(b'\x50\x6A\x5C\x56')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GOBJ)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_BUF)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'sz1')
+    o.raw(b'\x0F\xAF\x83'); o.d32(data_va + IME_FNUM)
+    o.raw(b'\x99\x8B\x8B'); o.d32(data_va + IME_FDEN); o.raw(b'\xF7\xF9')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_BUF)
+    o.mark('sz1')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_BUF + 4)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'sz2')
+    o.raw(b'\x0F\xAF\x83'); o.d32(data_va + IME_FNUM)
+    o.raw(b'\x99\x8B\x8B'); o.d32(data_va + IME_FDEN); o.raw(b'\xF7\xF9')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_BUF + 4)
+    o.mark('sz2')
+    o.raw(b'\x8D\x83'); o.d32(data_va + IME_BUF)
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_CFIW)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\xFF\x83'); o.d32(data_va + IME_SELCTR)
+    o.raw(b'\xF6\x83'); o.d32(data_va + IME_SELCTR); o.raw(b'\x01')
+    o.j8(0x74, 'ev1')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_DST2)
+    o.raw(b'\x89\xB3'); o.d32(data_va + IME_SRC2)
+    o.j32('dopush')
+    o.mark('ev1')
+    o.raw(b'\x89\x83'); o.d32(data_va + IME_DST1)
+    o.raw(b'\x89\xB3'); o.d32(data_va + IME_SRC1)
+    o.mark('dopush')
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.j32('callit')
+    o.mark('plain')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.raw(b'\xFF\x74\x24\x28')
+    o.mark('callit')
+    o.raw(b'\x8D\x83'); o.d32(tr_va)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x44\x24\x1C')
+    o.raw(b'\x61\xC2\x08\x00')
+    return o.finish()
+
+
+def _ime_cs_stub(stub_va, data_va, tr_va):
+    """callsite 桩：x' = O + f·(x−O)；末跳到 TR_CS（运行时构建的跳板）。"""
+    o = _IB(stub_va + 6)
+
+    def comp(arg_off, o_off):
+        o.raw(b'\x8B\x44\x24' + bytes([arg_off]))
+        o.raw(b'\x8B\xF0')
+        o.raw(b'\x0F\xAF\x83'); o.d32(data_va + IME_FNUM)
+        o.raw(b'\x99\x8B\x8B'); o.d32(data_va + IME_FDEN); o.raw(b'\xF7\xF9')
+        o.raw(b'\x89\xC7')
+        o.raw(b'\x8B\x83'); o.d32(data_va + o_off)
+        o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FNUM)
+        o.raw(b'\x2B\x8B'); o.d32(data_va + IME_FDEN)
+        o.raw(b'\x0F\xAF\xC1')
+        o.raw(b'\x99\x8B\x8B'); o.d32(data_va + IME_FDEN); o.raw(b'\xF7\xF9')
+        o.raw(b'\x2B\xF8')
+        o.raw(b'\x89\x7C\x24' + bytes([arg_off]))
+
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x93'); o.d32(data_va + IME_OX)
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_OY)
+    o.raw(b'\x8B\xC2')
+    o.raw(b'\x0B\xC1')
+    o.jc32(0x84, 'done')
+    comp(0x28, IME_OX)
+    comp(0x2C, IME_OY)
+    o.mark('done')
+    o.raw(b'\x61')
+    _rel = tr_va - (stub_va + len(o.b) + 5)
+    o.raw(b'\xE9' + struct.pack('<i', _rel))            # jmp TR_CS（静态 rel32，位置无关）
+    return o.finish()
+
+
+def _ime_hook1(base_va, data_va):
+    """共享装钩子（安装例程 call；ebx=安装例程锚点）。
+    入：esi=目标VA、edi=桩VA、edx=原序言槽VA、ecx=T5槽VA(0=CS模式)、ebp=标志字节VA。"""
+    cv = data_va - IME_BASE_OFF
+    o = _IB(base_va)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x8B\x06\x89\x02')                          # mov eax,[esi]; mov [edx],eax
+    o.raw(b'\x8B\x46\x04\x89\x42\x04')                  # mov eax,[esi+4]; mov [edx+4],eax
+    o.raw(b'\x85\xC9')                                  # test ecx,ecx
+    o.j8(0x75, 'not_cs')
+    o.raw(b'\x8D\x8B'); o.d32(cv + IME_TR_CS)           # lea ecx,[TR_CS]
+    o.raw(b'\x8B\x06\x89\x01')                          # mov eax,[esi]; mov [ecx],eax
+    o.raw(b'\x8B\x46\x04\x89\x41\x04')                  # mov eax,[esi+4]; mov [ecx+4],eax
+    o.raw(b'\x8B\xC6\x2B\xC1\x83\xE8\x05')              # mov eax,esi; sub eax,ecx; sub eax,5
+    o.raw(b'\xC6\x41\x06\xE9')                          # mov byte [ecx+6],0xE9
+    o.raw(b'\x89\x41\x07')                              # mov [ecx+7],eax
+    o.j32('no_t5')                                      # CS 模式结束，跳过 T5 写入
+    o.mark('not_cs')
+    o.raw(b'\x85\xC9')
+    o.j8(0x74, 'no_t5')
+    o.raw(b'\x8B\xC6\x83\xC0\x05')                      # mov eax,esi; add eax,5
+    o.raw(b'\x89\x01')                                  # mov [ecx],eax
+    o.mark('no_t5')
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD))
+    o.raw(b'\x50\x6A\x40\x6A\x08\x56')                  # push &old; push 0x40; push 8; push esi
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\x8B\xC7\x2B\xC6\x83\xE8\x05')              # mov eax,edi; sub eax,esi; sub eax,5
+    o.raw(b'\x89\x46\x01')                              # mov [esi+1],eax
+    o.raw(b'\xC6\x06\xE9')                              # mov byte [esi],0xE9
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD))
+    o.raw(b'\x50')                                      # push &vpold（第4参 lpflOldProtect）
+    o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))            # push [vpold]（第3参 flNewProtect=旧值）
+    o.raw(b'\x6A\x08\x56')                            # push 8; push esi
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\xC6\x45\x00\x01')                          # mov byte [ebp],1
+    o.raw(b'\xC3')
+    return o.finish()
+
+
+def _ime_unhook1(base_va, data_va):
+    """共享还原子（还原例程 call）。入：esi=目标、edi=原序言槽VA、ebp=标志VA。"""
+    o = _IB(base_va)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x80\x3E\xE9')
+    o.j8(0x75, 'done')
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD))
+    o.raw(b'\x50\x6A\x40\x6A\x08\x56')
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\x8B\x07\x8B\x4F\x04\xC1\xE8\x08\xC1\xE1\x18\x0B\xC1')
+    o.raw(b'\x89\x46\x01')
+    o.raw(b'\x8B\x07\x88\x06')                          # mov eax,[edi]; mov [esi],al
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD))
+    o.raw(b'\x50')                                      # push &vpold（第4参 lpflOldProtect）
+    o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))            # push [vpold]（第3参 flNewProtect=旧值）
+    o.raw(b'\x6A\x08\x56')                            # push 8; push esi
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\xC6\x45\x00\x00')
+    o.mark('done')
+    o.raw(b'\xC3')
+    return o.finish()
+
+
+def _ime_install_build(ta_va, data_va):
+    """安装例程。ta_va = 例程自身 VA；ebx=锚点。"""
+    cv = data_va - IME_BASE_OFF
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    def gmh(name_rel):
+        o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + name_rel)
+        o.raw(b'\x50')
+        o.raw(b'\xFF\x93'); o.d32(GMH_IAT)
+        o.raw(b'\x8B\xF0\x85\xF6')
+
+    def ro(name_rel, slot):
+        o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + name_rel)
+        o.raw(b'\x50\x56')
+        o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
+        o.raw(b'\x89\x83'); o.d32(d(slot))
+
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x83'); o.d32(d(IME_PTR_CTS))
+    o.raw(b'\x85\xC0')
+    o.jc32(0x85, 'resolved')
+    gmh(IME_S_USER32); o.j8(0x74, 'no_u32')
+    ro(IME_S_CTS, IME_PTR_CTS)
+    ro(IME_S_FOCUS, IME_PTR_FOCUS)
+    ro(IME_S_GDPI, IME_PTR_GDPI)
+    ro(IME_S_GDPS, IME_PTR_GDPS)
+    o.mark('no_u32')
+    gmh(IME_S_GDI32); o.j8(0x74, 'no_g32')
+    ro(IME_S_SEL, IME_PTR_SEL)
+    ro(IME_S_GOBJ, IME_PTR_GOBJ)
+    ro(IME_S_CFIW, IME_PTR_CFIW)
+    o.mark('no_g32')
+    gmh(IME_S_MSCTF); o.j8(0x74, 'no_m32')
+    o.raw(b'\x89\xB3'); o.d32(d(IME_MSCTF_BASE))
+    o.raw(b'\x8B\x83'); o.d32(d(IME_MSCTF_BASE))
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'no_ct')
+    for _slot, _rva in ((IME_CT1, 0xE55D1), (IME_CT2, 0xE55DD), (IME_CT3, 0xEB083),
+                        (IME_C1, 0xE40ED), (IME_C2, 0xE413C), (IME_C3, 0xE3EEA), (IME_C4, 0xE3F0F)):
+        o.raw(b'\x8B\xC8')                              # mov ecx,eax
+        o.raw(b'\x81\xC1'); o.raw(struct.pack('<I', _rva))   # add ecx,rva
+        o.raw(b'\x89\x8B'); o.d32(d(_slot))             # mov [slot],ecx
+    o.mark('no_ct')
+    o.mark('no_m32')
+    gmh(IME_S_KERNEL); o.j8(0x74, 'no_k32')
+    ro(IME_S_VPROT, IME_PTR_VPROT)
+    o.mark('no_k32')
+    o.mark('resolved')
+    o.raw(b'\xC7\x83'); o.d32(d(IME_FNUM)); o.raw(b'\x60\x00\x00\x00')
+    o.raw(b'\xC7\x83'); o.d32(d(IME_FDEN)); o.raw(b'\x60\x00\x00\x00')
+    o.raw(b'\x8B\x83'); o.d32(d(IME_PTR_GDPS))
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'no_gdps')
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'no_gdps')
+    o.raw(b'\x89\x83'); o.d32(d(IME_FNUM))
+    o.mark('no_gdps')
+
+    def emit_hook(idx, flag_off, ptr_slot, stub_off, orig_off, t5_off, cs_mode):
+        mk = 'sk%d' % idx
+        o.raw(b'\x80\xBB'); o.d32(d(flag_off)); o.raw(b'\x00')
+        o.j8(0x75, mk)
+        if cs_mode:
+            o.raw(b'\x8B\x83'); o.d32(d(IME_MSCTF_BASE))
+            o.raw(b'\x85\xC0')
+            o.j8(0x74, mk)
+            o.raw(b'\x8B\xF0')
+            o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', 0x47A8A))
+        else:
+            o.raw(b'\x8B\x83'); o.d32(d(ptr_slot))
+            o.raw(b'\x85\xC0')
+            o.j8(0x74, mk)
+            o.raw(b'\x8B\xF0')
+        o.raw(b'\x8D\xBB'); o.d32(cv + stub_off)
+        o.raw(b'\x8D\x93'); o.d32(d(orig_off))
+        if cs_mode:
+            o.raw(b'\x33\xC9')
+        else:
+            o.raw(b'\x8D\x8B'); o.d32(d(t5_off))
+        o.raw(b'\x8D\xAB'); o.d32(d(flag_off))
+        o.call_va(cv + IME_HOOK1)
+        o.mark(mk)
+
+    emit_hook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_STUB_CTS, IME_ORIG_CTS, IME_T5_CTS, False)
+    emit_hook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_STUB_SEL, IME_ORIG_SEL, IME_T5_SEL, False)
+    emit_hook(2, IME_FLAGS + 2, 0, IME_STUB_CS, IME_ORIG_CS, 0, True)
+    o.raw(b'\x61\xC3')
+    return o.finish()
+
+
+def _ime_restore_build(ta_va, data_va):
+    cv = data_va - IME_BASE_OFF
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+
+    def emit_unhook(idx, flag_off, ptr_slot, orig_off, cs_mode):
+        mk = 'rk%d' % idx
+        o.raw(b'\x80\xBB'); o.d32(d(flag_off)); o.raw(b'\x00')
+        o.j8(0x74, mk)
+        if cs_mode:
+            o.raw(b'\x8B\x83'); o.d32(d(IME_MSCTF_BASE))
+            o.raw(b'\x85\xC0')
+            o.j8(0x74, mk)
+            o.raw(b'\x8B\xF0')
+            o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', 0x47A8A))
+        else:
+            o.raw(b'\x8B\x83'); o.d32(d(ptr_slot))
+            o.raw(b'\x85\xC0')
+            o.j8(0x74, mk)
+            o.raw(b'\x8B\xF0')
+        o.raw(b'\x8D\xBB'); o.d32(d(orig_off))
+        o.raw(b'\x8D\xAB'); o.d32(d(flag_off))
+        o.call_va(cv + IME_UNHOOK1)
+        o.mark(mk)
+
+    emit_unhook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_ORIG_CTS, False)
+    emit_unhook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_ORIG_SEL, False)
+    emit_unhook(2, IME_FLAGS + 2, 0, IME_ORIG_CS, True)
+    o.raw(b'\x61\xC3')
+    return o.finish()
+
+
+def _ime_wrap_build(ta_va, call_va, jmp_va):
+    o = _IB(ta_va + 6)
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8D\x83'); o.d32(call_va)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x8D\x83'); o.d32(jmp_va)
+    o.raw(b'\x89\x44\x24\x1C')
+    o.raw(b'\x61\xFF\xE0')
+    return o.finish()
+
+
+# ====================== 接线（并入 patch_dll.py 后由其调用）======================
+def _ime_tr_body(cv, stub_off, t5_off):
+    """系统函数跳板：原序言 5B + push [T5 槽] + ret（T5 由安装例程填 target+5）。"""
+    anchor = cv + stub_off + 6
+    disp = (cv + IME_BASE_OFF + t5_off) - anchor
+    return b'\x8B\xFF\x55\x8B\xEC' + b'\xFF\xB3' + struct.pack('<i', disp) + b'\xC3'
+
+
+def build_ime_layer(data):
+    """构建全部 IME 组件并接线（返回 data）。宿主需提供 _u32/_u16/struct/data。"""
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt = e + 24
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_raw is None:
+        raise RuntimeError('IME：找不到 .cave')
+    cave_va = 0x400000 + cave_rva
+    data_va = cave_va + IME_BASE_OFF
+
+    # 零区预检（0x2810-0x3900）
+    if any(data[cave_raw + IME_BASE_OFF: cave_raw + IME_STR]):
+        raise RuntimeError('IME：数据/桩区非零，疑似布局冲突')
+    if any(data[cave_raw + IME_STR: cave_raw + 0x3A00]):
+        raise RuntimeError('IME：字符串区非零')
+
+    def put(off, blob):
+        data[cave_raw + off: cave_raw + off + len(blob)] = blob
+
+    put(IME_STR, IME_STR_BLOB)
+    put(IME_STUB_CTS, _ime_cts_stub(cave_va + IME_STUB_CTS, data_va, cave_va + IME_TR_CTS))
+    put(IME_STUB_SEL, _ime_sel_stub(cave_va + IME_STUB_SEL, data_va, cave_va + IME_TR_SEL))
+    put(IME_STUB_CS, _ime_cs_stub(cave_va + IME_STUB_CS, data_va, cave_va + IME_TR_CS))
+    put(IME_TR_CTS, _ime_tr_body(cave_va, IME_STUB_CTS, IME_T5_CTS))
+    put(IME_TR_SEL, _ime_tr_body(cave_va, IME_STUB_SEL, IME_T5_SEL))
+    put(IME_HOOK1, _ime_hook1(cave_va + IME_INSTALL + 6, data_va))
+    put(IME_UNHOOK1, _ime_unhook1(cave_va + IME_RESTORE + 6, data_va))
+    put(IME_INSTALL, _ime_install_build(cave_va + IME_INSTALL, data_va))
+    put(IME_RESTORE, _ime_restore_build(cave_va + IME_RESTORE, data_va))
+    put(IME_WRAP_LOAD, _ime_wrap_build(cave_va + IME_WRAP_LOAD, cave_va + IME_INSTALL, cave_va + IME_LOAD_WRAP_ORIG))
+    put(IME_WRAP_UNLOAD, _ime_wrap_build(cave_va + IME_WRAP_UNLOAD, cave_va + IME_RESTORE, cave_va + IME_UNLOAD_STUB_ORIG))
+
+    # EAT 重定向：load（既有断言：索引 1 = cave+0x1F7C）；unload（找 = cave+0x2400）
+    _eo = _u32(data, opt + 96)
+    _efo_off = None
+    for i in range(nsec):
+        off2 = sec + 40 * i
+        va2 = _u32(data, off2 + 12)
+        vs2 = _u32(data, off2 + 8)
+        if va2 <= _eo < va2 + vs2:
+            _efo_off = _u32(data, off2 + 20) + (_eo - va2)
+    _af = _u32(data, _efo_off + 28)
+    _fun = None
+    for i in range(nsec):
+        off2 = sec + 40 * i
+        va2 = _u32(data, off2 + 12)
+        vs2 = _u32(data, off2 + 8)
+        if va2 <= _af < va2 + vs2:
+            _fun = _u32(data, off2 + 20) + (_af - va2)
+    nfun = _u32(data, _efo_off + 20)
+    if _u32(data, _fun + 4) != cave_rva + IME_LOAD_WRAP_ORIG:
+        raise RuntimeError('IME：load EAT 不符（应=cave+0x1F7C）')
+    struct.pack_into('<I', data, _fun + 4, cave_rva + IME_WRAP_LOAD)
+    for i in range(nfun):
+        if _u32(data, _fun + 4 * i) == cave_rva + IME_UNLOAD_STUB_ORIG:
+            struct.pack_into('<I', data, _fun + 4 * i, cave_rva + IME_WRAP_UNLOAD)
+            break
+    else:
+        raise RuntimeError('IME：未找到 unload EAT（=cave+0x2400）')
+    print('IME 层已应用: 三桩(CTS/SEL/CS) + 安装/还原 + 载入/卸载包装 + EAT 重定向'
+          '（cave+0x%X..0x%X）' % (IME_BASE_OFF, IME_WRAP_UNLOAD + 0x40))
+    return data
+
+
 def deploy_misaki(data: bytes, dst: str):
     """部署 misaki.dll（直接覆盖）。"""
     with open(dst, 'wb') as f:
@@ -2249,6 +2917,10 @@ data = patch_aitxt(data)
 data = patch_exit_fix(data)
 
 data = patch_ctx_return_on_detach(data)
+
+# IME 修复层（微软拼音候选/组字窗/字体；详见 docs/输入法修复调查记录_进行中.md）
+if IME_ENABLE:
+    data = build_ime_layer(data)
 
 os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:
