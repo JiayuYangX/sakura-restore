@@ -55,6 +55,9 @@ first.dll：
       窗口交给系统按屏幕缩放（含 GDI 自绘文字）；请求之外 SSP 自身界面不受影响。
     - 拖动修复：6 处 FormMouseMove 里 SC_DRAGMOVE 的 SendMessageA 调用改为经过
       .cave 包装桩（拖动模态循环期间线程 GDISCALED）。
+    - 输入法修复（.cave IME 段，随 load 安装/unload 还原）：候选框"感知修正"根治
+      （截答 textinputframework 的窗口感知查询，新旧版微软拼音一致）+ 组字窗字体
+      替换 + 摆位补偿；详见《窗口分析及修复.md》§9。
 
   状态栏重影修复（原版缺陷）：TStatusBar 的窗口类缺 CS_HREDRAW，拖动改变 Todo/Notify
     宽度时系统不做整窗失效、旧像素残留（文字重影）。在 TWinControl.CreateWnd 调用虚拟
@@ -1629,8 +1632,9 @@ DPI_WRAP_USER32 = 0x04
 DPI_WRAP_SETNAME = 0x10
 DPI_WRAP_IB = 0x400000        # 映像首选基址
 DPI_WRAP_ENABLE = True        # 总开关：出问题改 False 重建即可回到普通构建
-def _build_dpi_wrap_stub(stub_va, data_va, target_va):
+def _build_dpi_wrap_stub(stub_va, data_va, target_va, ctr_va=None):
     """位置无关的导出包装桩（stub/data/target 均为首选基址下的 VA）。"""
+    # ctr_va 非空时：入口处 lock inc [ctr]（探针计数，用于区分 request 调用）
     pset_va = data_va + DPI_WRAP_PSET
     str1_va = data_va + DPI_WRAP_USER32
     str2_va = data_va + DPI_WRAP_SETNAME
@@ -1656,6 +1660,8 @@ def _build_dpi_wrap_stub(stub_va, data_va, target_va):
     buf += b'\xE8\x00\x00\x00\x00'        # call $+5
     base = stub_va + len(buf)             # pop ebx 所在 VA
     buf += b'\x5B'                        # pop ebx
+    if ctr_va is not None:
+        buf += b'\xF0\xFF\x83'; d32(ctr_va)   # lock inc dword [ebx+ctr-base]（探针计数）
     buf += b'\x8B\x83'; d32(pset_va)      # mov eax,[ebx+pset-base]
     buf += b'\x85\xC0'                    # test eax,eax
     buf += b'\x75'; r8('ctx')             # jne .ctx
@@ -2056,6 +2062,7 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
         sv = DPI_WRAP_IB + cave_rva + off_
         dv = DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF
         tv = DPI_WRAP_IB + frva
+        # 探针 request 计数暂不启用：0x170 段只剩 0x88 字节，再加 7 字节会撞 0x1F8（响应缓冲）
         stub = _build_dpi_wrap_stub(sv, dv, tv)
         limit = (0x1F8 if nm == 'request' else 0x2000)
         if len(stub) > limit - off_:
@@ -2740,23 +2747,29 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 
 # ============================================================ IME 修复层（新版微软拼音）
 # 现象与根因（详见 docs/窗口分析及修复.md 第 9 节）：
-#   GDISCALED(96dpi 虚拟)窗口下：候选框位置 ×f 偏移、组字窗字体过小/尺寸不随文自适应、相对偏移。
-#   根因：MSCTF 按虚拟坐标计算锚点而候选由宿主按物理像素摆放；组字窗绘制用缓存字体
+#   GDISCALED(96dpi 虚拟)窗口下：候选框位置偏移、组字窗字体过小/尺寸不随文自适应、相对偏移。
+#   根因：MSCTF 按虚拟坐标计算锚点；组字窗绘制用缓存字体
 #        （[obj+0x18C/0x194]，只在"字体设置事件"重建），测量读数只喂布局。
-# 最终方法（三钩子 + 载入安装/卸载还原，全部 .cave 内，位置无关）：
-#   1) user32!ClientToScreen 入口钩：返回地址 ∈ msctf+{0xE55D1,0xE55DD,0xEB083} → 输出 ÷f；
-#      EB083 记录原始输出为原点 O；焦点窗口 GetDpiForWindow==96 门控。
+# 候选框根治 —— 感知修正层（独立子层，常量 AWRFIX_*，链入 load/unload）：
+#   GDISCALED 幽灵窗口的锚点已是物理值；新版微软拼音的进程内管线（textinputframework.dll）
+#   按"窗口感知级别"把应用判为未感知、对锚点再补一次 ×f 缩放 → 候选框二次放大（偏右下）。
+#   修法：钩 user32!GetWindowDpiAwarenessContext；命中 textinputframework 两处调用点时
+#   回答 PMv2（物理感知）→ 补偿不再发生；锚点源头保持原值（不再需要任何 ÷f）。
+#   旧版引擎不经这段管线，因此同一修法对两版引擎都正确，无需分流判别。
+# 其余三件套（同一装配：载入安装/卸载还原，全部 .cave 内，位置无关）：
+#   1) user32!ClientToScreen 入口钩：返回地址 ∈ msctf+{0xE55D1,0xE55DD,0xEB083} →
+#      门控（焦点窗口 GetDpiForWindow==96）+ 记录 EB083 原始输出为原点 O + 动态因子刷新。
 #   2) gdi32!SelectObject 入口钩：返回地址 ∈ msctf+{0xE40ED,0xE413C,0xE3EEA,0xE3F0F} 或
 #      对象==缓存源字体 → 替换为自建 ×f 字体（惰性创建、两句柄缓存）；同一门控。
-#   3) msctf+0x47A8A（SetWindowPos 调用点）桩：偏移补偿 x' = O + f·(x−O)（O=0 跳过）。
-#   动态因子：线程临时尖峰 PMv2 → GetDpiForMonitor 实测系统 DPI/96（实时跟随切档）；
+#   3) msctf+0x47A8A（SetWindowPos 调用点）桩：组字窗摆位补偿 x' = O + f·(x−O)（O=0 跳过）。
+# 动态因子：线程临时尖峰 PMv2 → GetDpiForMonitor 实测系统 DPI/96（实时跟随切档）；
 #   96dpi 时因子=1（全恒等 no-op，兼容 MATERIA）。
 #   装配：load 导出 EAT 重定向到"载入包装"（call 安装例程后转原包装）；unload 同理先还原再转；
 #   目标函数经 GetModuleHandleA/GetProcAddress 于安装时解析（IAT 槽 0x4B31E4/0x4B31E0）。
 # cave 布局（0x2810 起）：数据 0x2810-0x28FF | CTS 桩 0x2A00 | SEL 桩 0x2C00 | CS 桩 0x3000 |
-#   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3600 | hook1 0x36E0 | unhook1 0x3760 |
-#   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x4000；
-#   0x3B00 打字屏蔽桩、0x4000 重力语变换桩为后续新增，cave 已扩至 0x6000）
+#   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3620 | hook1 0x36E0 | unhook1 0x3760 |
+#   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x6000；
+#   0x3B00 打字屏蔽桩、0x4000 重力语变换桩、0x5860 感知修正层为后续新增）
 
 IME_BASE_OFF = 0x2810
 IME_PTR_CTS = 0x00
@@ -2805,10 +2818,39 @@ IME_TR_CTS = 0x3200     # 12B（8B FF 55 8B EC / FF B3 disp / C3）
 IME_TR_SEL = 0x320C
 IME_TR_CS = 0x3250      # 运行时填充（原 6B + E9 回）
 IME_INSTALL = 0x3300
-IME_RESTORE = 0x3600
+IME_RESTORE = 0x3620    # （原 0x3600：探针加长后安装例程 769B 越界 1B 覆盖其 ret，
+                        #   表现为"load 后立即被还原"；槽位现留 0x20 余量 + 构建断言）
 IME_WRAP_LOAD = 0x3800
 IME_WRAP_UNLOAD = 0x3840
 IME_STR = 0x3900
+# ---- 感知修正层（根治件）：截答 textinputframework 的窗口感知查询 ----
+# 现象链：GDISCALED 幽灵窗口下，msctf 算出的锚点已是物理值；新版微软拼音的
+#   进程内管线（textinputframework.dll）按窗口感知级别判断"未感知应用"再补一次
+#   ×f 缩放 → 候选框二次放大（偏右下）。旧版引擎不经这段管线，故原本正确。
+# 修法：钩 user32!GetWindowDpiAwarenessContext；命中 textinputframework 两处
+#   调用点时回答 PMv2（物理感知）→ 补偿不再发生；锚点源头保持原值（不再需要 ÷f）。
+# 版本护栏：站点用精确返回地址比对，失配则不截答、自动降级直通（功能静默失效、无副作用）。
+AWRFIX_SITE1 = 0x93642              # textinputframework.dll 两处查询的返回地址（RVA）
+AWRFIX_SITE2 = 0x9365C
+AWRFIX_PTR = 0x100                  # user32!GetWindowDpiAwarenessContext 指针（data_va 相对）
+AWRFIX_ORIG = 0x104                 # 原序言暂存
+AWRFIX_T5 = 0x108                   # 跳板槽
+AWRFIX_FLAG = 0x10C                 # 挂载标志
+AWRFIX_TIB = 0x110                  # 懒解析的 textinputframework 基址
+AWRFIX_PMV2 = 0x114                 # 安装时取得的 PMv2 规范句柄
+AWRFIX_GTC = 0x118                  # user32!GetThreadDpiAwarenessContext
+AWRFIX_TMP = 0x11C
+AWRFIX_STUB = 0x5860                # 感知修正桩
+AWRFIX_TR = 0x5A00                  # 跳板（12B）
+AWRFIX_INSTALL = 0x5A20             # 安装例程
+AWRFIX_RESTORE = 0x5B80             # 还原例程
+AWRFIX_STR_AWARE = 0x5C00           # "GetWindowDpiAwarenessContext\0"
+AWRFIX_STR_TIB = 0x5C20             # "textinputframework.dll\0"
+AWRFIX_STR_GTC = 0x5C40             # "GetThreadDpiAwarenessContext\0"
+AWRFIX_HOOK1 = 0x5C80               # 本层专用 hook1（ebx=本层安装例程基址）
+AWRFIX_UNHOOK1 = 0x5D00             # 本层专用 unhook1
+AWRFIX_CHAIN_LOAD = 0x5D80          # call 安装两例程（IME + 本层）
+AWRFIX_CHAIN_UNLOAD = 0x5DA0        # call 还原两例程（本层 + IME）
 IME_CAVE_SIZE = 0x6000              # 0x4000（IME 尽头）→ 0x6000：尾部空段放重力语变换桩
 IME_HOOK1 = 0x36E0
 IME_UNHOOK1 = 0x3760
@@ -2946,6 +2988,127 @@ def _ime_factor_refresh(o, data_va, tag=''):
     o.raw(b'\xC7\x83'); o.d32(data_va + IME_FDEN); o.raw(b'\x60\x00\x00\x00')
 
 
+def _awrfix_stub(stub_va, data_va, tr_va):
+    """GetWindowDpiAwarenessContext 钩子（感知修正件）：
+    命中 textinputframework 两处调用点 → 回答伪造 PMv2 句柄（物理感知）；
+    其余 → 原样转真函数（stub 顶部即返回真值，不改变任何行为）。"""
+    o = _IB(stub_va + 6)
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_TIB)         # mov eax,[TIB]
+    o.raw(b'\x85\xC0')
+    o.j8(0x75, 'haveb')
+    o.raw(b'\x8D\x83'); o.d32((data_va - IME_BASE_OFF) + AWRFIX_STR_TIB); o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(GMH_IAT)                      # GMH("textinputframework.dll")
+    o.raw(b'\x89\x83'); o.d32(data_va + AWRFIX_TIB)
+    o.mark('haveb')
+    o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_TIB)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'plain')
+    o.raw(b'\x8B\x54\x24\x20')                              # ret addr
+    o.raw(b'\x8D\x88' + struct.pack('<i', AWRFIX_SITE1))    # lea ecx,[eax+SITE1]
+    o.raw(b'\x3B\xD1'); o.j8(0x74, 'fake')
+    o.raw(b'\x8D\x88' + struct.pack('<i', AWRFIX_SITE2))
+    o.raw(b'\x3B\xD1'); o.j8(0x75, 'plain')
+    o.mark('fake')
+    o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_PMV2)        # mov eax,[PMV2]
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'plain')                                     # 未取得句柄 → 走真函数
+    o.raw(b'\x89\x44\x24\x1C')                              # 返回值 = 伪造句柄
+    o.raw(b'\x61\xC2\x04\x00')                              # popad; ret 4
+    o.mark('plain')
+    o.raw(b'\xFF\x74\x24\x24')                              # push hwnd
+    o.raw(b'\x8D\x83'); o.d32(tr_va)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x44\x24\x1C')                              # 真返回值
+    o.raw(b'\x61\xC2\x04\x00')
+    return o.finish()
+
+
+def _awrfix_install_build(ta_va, data_va, cv):
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_PTR))
+    o.raw(b'\x85\xC0')
+    o.jc32(0x85, 'resolved')
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + IME_S_USER32); o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(GMH_IAT); o.raw(b'\x8B\xF0\x85\xF6')
+    o.jc32(0x84, 'done')
+    for name_va, slot in ((cv + AWRFIX_STR_AWARE, AWRFIX_PTR),
+                          (cv + AWRFIX_STR_GTC, AWRFIX_GTC)):
+        o.raw(b'\x8D\x83'); o.d32(name_va); o.raw(b'\x50\x56')
+        o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
+        o.raw(b'\x89\x83'); o.d32(d(slot))
+    o.mark('resolved')
+    # 取得 PMv2 规范句柄：old = STDA(-4); h = GetThreadDpiAwarenessContext(); STDA(old)
+    o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_GTC)); o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'nopmv2')
+    o.raw(b'\x8B\x83'); o.d32(d(IME_PTR_STDA)); o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'nopmv2')
+    o.raw(b'\x6A\xFC')                                  # push -4（PMv2）
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_STDA))
+    o.raw(b'\x89\x83'); o.d32(d(AWRFIX_TMP))
+    o.raw(b'\xFF\x93'); o.d32(d(AWRFIX_GTC))            # call GetThreadDpiAwarenessContext
+    o.raw(b'\x89\x83'); o.d32(d(AWRFIX_PMV2))
+    o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_TMP)); o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_STDA))          # 还原旧上下文
+    o.mark('nopmv2')
+    # 装钩（单钩：GetWindowDpiAwarenessContext）
+    o.raw(b'\x80\xBB'); o.d32(d(AWRFIX_FLAG)); o.raw(b'\x00')
+    o.j8(0x75, 'dk')
+    o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_PTR)); o.raw(b'\x85\xC0')
+    o.j8(0x74, 'dk')
+    o.raw(b'\x8B\xF0')                     # esi = target
+    o.raw(b'\x81\x3E\x8B\xFF\x55\x8B')     # cmp dword [esi], 0x8B55FF8B（前 4 字节 = 8B FF 55 8B）
+    o.j8(0x75, 'dk')                       # 非标准序言 → 跳过
+    o.raw(b'\x8D\xBB'); o.d32(cv + AWRFIX_STUB)
+    o.raw(b'\x8D\x93'); o.d32(d(AWRFIX_ORIG))
+    o.raw(b'\x8D\x8B'); o.d32(d(AWRFIX_T5))
+    o.raw(b'\x8D\xAB'); o.d32(d(AWRFIX_FLAG))
+    o.call_va(cv + AWRFIX_HOOK1)
+    o.mark('dk')
+    o.mark('done')
+    o.raw(b'\x61\xC3')
+    return o.finish()
+
+
+def _awrfix_restore_build(ta_va, data_va, cv):
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x80\xBB'); o.d32(d(AWRFIX_FLAG)); o.raw(b'\x00')
+    o.j8(0x74, 'rk')
+    o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_PTR)); o.raw(b'\x85\xC0')
+    o.j8(0x74, 'rk')
+    o.raw(b'\x8B\xF0')
+    o.raw(b'\x8D\xBB'); o.d32(d(AWRFIX_ORIG))
+    o.raw(b'\x8D\xAB'); o.d32(d(AWRFIX_FLAG))
+    o.call_va(cv + AWRFIX_UNHOOK1)
+    o.mark('rk')
+    o.raw(b'\x61\xC3')
+    return o.finish()
+
+
+def _layer_chain(chain_va, a_va, b_va):
+    """链例程：push ebx 保留调用者基址 → 依次 call a、b → 还原 ebx。"""
+    o = _IB(chain_va + 6)
+    o.raw(b'\x53')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8D\x83'); o.d32(a_va); o.raw(b'\xFF\xD0')
+    o.raw(b'\x8D\x83'); o.d32(b_va); o.raw(b'\xFF\xD0')
+    o.raw(b'\x5B\xC3')
+    return o.finish()
+
+
 def _ime_cts_stub(stub_va, data_va, tr_va):
     o = _IB(stub_va + 6)
     o.raw(b'\x60')
@@ -2987,17 +3150,6 @@ def _ime_cts_stub(stub_va, data_va, tr_va):
     o.raw(b'\x8B\x46\x04')
     o.raw(b'\x89\x83'); o.d32(data_va + IME_OY)
     o.mark('noO')
-    for off in (0, 4):
-        o.raw(b'\x8B\x46' + bytes([off]))
-        o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FDEN)
-        o.raw(b'\x0F\xAF\xC1')
-        o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FNUM)
-        o.raw(b'\x8B\xD1')
-        o.raw(b'\xD1\xEA')
-        o.raw(b'\x03\xC2')
-        o.raw(b'\x33\xD2')
-        o.raw(b'\xF7\xF1')
-        o.raw(b'\x89\x46' + bytes([off]))
     o.j32('done')
     o.mark('plain')
     o.raw(b'\xFF\x74\x24\x28')
@@ -3428,18 +3580,45 @@ def build_ime_layer(data):
     def put(off, blob):
         data[cave_raw + off: cave_raw + off + len(blob)] = blob
 
-    put(IME_STR, IME_STR_BLOB)
-    put(IME_STUB_CTS, _ime_cts_stub(cave_va + IME_STUB_CTS, data_va, cave_va + IME_TR_CTS))
-    put(IME_STUB_SEL, _ime_sel_stub(cave_va + IME_STUB_SEL, data_va, cave_va + IME_TR_SEL))
-    put(IME_STUB_CS, _ime_cs_stub(cave_va + IME_STUB_CS, data_va, cave_va + IME_TR_CS))
+    def put_ck(off, limit_off, blob, tag):
+        """带槽位长度断言的写入（防止加长后静默覆盖相邻例程）。"""
+        if len(blob) > limit_off - off:
+            raise RuntimeError('IME：%s 过长 %dB > 槽位 %dB（cave+0x%X 起，止于 +0x%X）'
+                               % (tag, len(blob), limit_off - off, off, limit_off))
+        put(off, blob)
+
+    put_ck(IME_STR, 0x3A00, IME_STR_BLOB, '字符串区')
+    put_ck(IME_STUB_CTS, IME_STUB_SEL, _ime_cts_stub(cave_va + IME_STUB_CTS, data_va, cave_va + IME_TR_CTS), 'CTS 桩')
+    put_ck(IME_STUB_SEL, IME_STUB_CS, _ime_sel_stub(cave_va + IME_STUB_SEL, data_va, cave_va + IME_TR_SEL), 'SEL 桩')
+    put_ck(IME_STUB_CS, IME_TR_CTS, _ime_cs_stub(cave_va + IME_STUB_CS, data_va, cave_va + IME_TR_CS), 'CS 桩')
     put(IME_TR_CTS, _ime_tr_body(cave_va, IME_STUB_CTS, IME_T5_CTS))
     put(IME_TR_SEL, _ime_tr_body(cave_va, IME_STUB_SEL, IME_T5_SEL))
-    put(IME_HOOK1, _ime_hook1(cave_va + IME_INSTALL + 6, data_va))
-    put(IME_UNHOOK1, _ime_unhook1(cave_va + IME_RESTORE + 6, data_va))
-    put(IME_INSTALL, _ime_install_build(cave_va + IME_INSTALL, data_va))
-    put(IME_RESTORE, _ime_restore_build(cave_va + IME_RESTORE, data_va))
-    put(IME_WRAP_LOAD, _ime_wrap_build(cave_va + IME_WRAP_LOAD, cave_va + IME_INSTALL, cave_va + IME_LOAD_WRAP_ORIG))
-    put(IME_WRAP_UNLOAD, _ime_wrap_build(cave_va + IME_WRAP_UNLOAD, cave_va + IME_RESTORE, cave_va + IME_UNLOAD_STUB_ORIG))
+    put_ck(IME_HOOK1, IME_UNHOOK1, _ime_hook1(cave_va + IME_INSTALL + 6, data_va), 'hook1')
+    put_ck(IME_UNHOOK1, IME_WRAP_LOAD, _ime_unhook1(cave_va + IME_RESTORE + 6, data_va), 'unhook1')
+    put_ck(IME_INSTALL, IME_RESTORE, _ime_install_build(cave_va + IME_INSTALL, data_va), '安装例程')
+    put_ck(IME_RESTORE, IME_HOOK1, _ime_restore_build(cave_va + IME_RESTORE, data_va), '还原例程')
+    # 感知修正层（根治件）：独立子层，链入 load/unload
+    if any(data[cave_raw + AWRFIX_STUB: cave_raw + 0x5E00]):
+        raise RuntimeError('IME：感知修正层区域非零，疑似布局冲突')
+    put(AWRFIX_STR_AWARE, b'GetWindowDpiAwarenessContext\x00')
+    put(AWRFIX_STR_TIB, b'textinputframework.dll\x00')
+    put(AWRFIX_STR_GTC, b'GetThreadDpiAwarenessContext\x00')
+    put_ck(AWRFIX_STUB, AWRFIX_TR, _awrfix_stub(cave_va + AWRFIX_STUB, data_va, cave_va + AWRFIX_TR), '感知修正桩')
+    put(AWRFIX_TR, _ime_tr_body(cave_va, AWRFIX_STUB, AWRFIX_T5))
+    put_ck(AWRFIX_INSTALL, AWRFIX_RESTORE, _awrfix_install_build(cave_va + AWRFIX_INSTALL, data_va, cave_va), '感知修正安装')
+    put_ck(AWRFIX_RESTORE, AWRFIX_STR_AWARE, _awrfix_restore_build(cave_va + AWRFIX_RESTORE, data_va, cave_va), '感知修正还原')
+    put_ck(AWRFIX_HOOK1, AWRFIX_UNHOOK1, _ime_hook1(cave_va + AWRFIX_INSTALL + 6, data_va), '感知修正 hook1')
+    put_ck(AWRFIX_UNHOOK1, AWRFIX_CHAIN_LOAD, _ime_unhook1(cave_va + AWRFIX_RESTORE + 6, data_va), '感知修正 unhook1')
+    put_ck(AWRFIX_CHAIN_LOAD, AWRFIX_CHAIN_UNLOAD,
+           _layer_chain(cave_va + AWRFIX_CHAIN_LOAD, cave_va + IME_INSTALL, cave_va + AWRFIX_INSTALL), '装载链')
+    put_ck(AWRFIX_CHAIN_UNLOAD, IME_CAVE_SIZE,
+           _layer_chain(cave_va + AWRFIX_CHAIN_UNLOAD, cave_va + AWRFIX_RESTORE, cave_va + IME_RESTORE), '卸载链')
+    put_ck(IME_WRAP_LOAD, IME_WRAP_UNLOAD, _ime_wrap_build(cave_va + IME_WRAP_LOAD,
+                                                           cave_va + AWRFIX_CHAIN_LOAD,
+                                                           cave_va + IME_LOAD_WRAP_ORIG), '载入包装')
+    put_ck(IME_WRAP_UNLOAD, IME_STR, _ime_wrap_build(cave_va + IME_WRAP_UNLOAD,
+                                                     cave_va + AWRFIX_CHAIN_UNLOAD,
+                                                     cave_va + IME_UNLOAD_STUB_ORIG), '卸载包装')
 
     # EAT 重定向：load（既有断言：索引 1 = cave+0x1F7C）；unload（找 = cave+0x2400）
     _eo = _u32(data, opt + 96)
@@ -3468,8 +3647,8 @@ def build_ime_layer(data):
             break
     else:
         raise RuntimeError('IME：未找到 unload EAT（=cave+0x2400）')
-    print('IME 层已应用: 三桩(CTS/SEL/CS) + 安装/还原 + 载入/卸载包装 + EAT 重定向'
-          '（cave+0x%X..0x%X）' % (IME_BASE_OFF, IME_WRAP_UNLOAD + 0x40))
+    print('IME 层已应用: 三桩(CTS/SEL/CS) + 感知修正层 + 安装/还原 + 载入/卸载包装 + EAT 重定向'
+          '（cave+0x%X..0x%X）' % (IME_BASE_OFF, AWRFIX_CHAIN_UNLOAD + 0x20))
     return data
 
 
