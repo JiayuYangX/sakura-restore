@@ -42,6 +42,9 @@ first.dll：
       双击重放该游戏菜单；视力已进入但未弹框时置 PENDING + 调关窗小段。
     - 关窗体辅助桩：FindWindowA + WM_CLOSE 关 Ttypinggameform / Teyesightform /
       Tcountdownform；CloseQuery 跳板保证 GAMELEFT 期间打字框可关。
+    - 打字定向屏蔽（挂 0x47239D 的 ConvertAll 调用处）：打字游戏进行中只豁免
+      "玩家输入脚本"与"要打文本"子串，提示语/结算语照常转换；退出游戏恢复原行为
+      （详见 _build_typing_gate_stub 与 docs/§8）。
 
   高分屏缩放与拖动：
     - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
@@ -285,6 +288,28 @@ TYPING_CLOSEQ_OFF = 0x6E200        # formCloseQuery：CanClose := 窗体.已提�
 TYPING_CLOSEQ_ORIG = bytes.fromhex('8A 80 21 03 00 00 88 01 C3')
 TYPING_CLOSEQ_VA = 0x46EE00
 CAVE_Q_OFF = 0x10D0                # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
+
+# 打字游戏期间的定向屏蔽（只保护"要打文本"与"玩家输入"，其余照常转换）：
+#   打字框文字经 SSTP 提交时会被 SSP 的脚本翻译过一遍（= DLL 的 ConvertAll C），
+#   题面显示也被同样转换，而判定按原文比较 → 开着任一模式时"怎么打都不对"。
+#   处理：在 OnTranslate 处理的转换调用处（0x47239D）加闸门——
+#   打字游戏进行中（[0x4ADCDC]≠0；进入游戏置1、退出置0，DLL 官方状态）时：
+#     a) 文本含 '\![raise,OnTypinggameInput,'（玩家输入脚本）→ 整体原样输出；
+#     b) 文本含当前"要打文本" P=[0x4B29F8] → 仅 P 保持原文，
+#        前后两段照常转换后拼回 out = C(前缀) + P + C(后缀)；
+#     c) 其余（题面提示语、结算语…）→ 照常 ConvertAll。
+#   非打字游戏时：完全不变（照常 ConvertAll）。
+TYPING_GATE_HOOK_VA = 0x47239D
+TYPING_GATE_HOOK_ORIG = bytes.fromhex('E8 3A E5 FF FF')     # call 0x4708DC
+TYPING_GATE_STUB_OFF = 0x3B00      # 桩位置（cave 尾部空闲区：IME 字符串止于 0x39E5）
+TYPING_FLAG_VA = 0x4ADCDC          # 打字游戏进行中标志
+CONVERT_ALL_VA = 0x4708DC          # 四模式转换（OnTranslate / 对话框都用它）
+LSTRASG_VA = 0x403C14              # Delphi 字符串赋值（var ← 值）
+LSTRCAT_VA = 0x403E48              # Delphi 字符串拼接（var += 值）
+SETLEN_VA = 0x404174               # Delphi SetLength（var, n；含写时复制）
+COPY_PREFIX_VA = 0x4187B4          # out := Copy(s, 1, n)（DLL 内部小工具，按字节）
+INPUT_NEEDLE_VA = 0x46EBFC         # '\![raise,OnTypinggameInput,' ANSI 常量
+PHRASE_VAR_VA = 0x4B29F8           # 当前"要打文本" ANSI 串全局
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -679,6 +704,256 @@ def _build_typing_closeq_stub(cave_va):
     return bytes(b)
 
 
+def _build_typing_gate_stub(stub_va):
+    """打字游戏期间的定向闸门（.cave+0x3B00，挂在 0x47239D 的 ConvertAll 调用处）。
+
+    进入时 EAX=待翻译文本（ANSI 串值）、EDX=输出串变量地址（与原 ConvertAll 调用一致）。
+    - 未在打字游戏（[0x4ADCDC]==0）：照常 ConvertAll（完全兼容原行为）；
+    - 进行中：
+        a) text 含 '\\![raise,OnTypinggameInput,'（玩家输入脚本）→ 整体原样输出
+           （连 \\![...] 语法一起保持），你打的字原样进判定；
+        b) text 含 P=[0x4B29F8]（当前"要打文本"）→ out = C(前缀) + P + C(后缀)：
+           前缀/后缀分开转换 → 转换规则永远看不到 P，天然免疫；
+           前缀用 0x4187B4（Copy(s,1,n)）取，后缀用 SetLength 写时复制 + rep movsb
+           去 P 得到；空串跳过转换（防 nil）。
+        c) 其余（题面提示语、结算语…）→ 照常 ConvertAll（保留模式风味）。
+    全程位置无关：先 call/pop/sub 求"运行时基址-链接基址"存 [ebp-0x2C]，
+    标志/常量/全局地址一律 delta 修正；查找/搬移为内联字节循环（CP936 多字节安全）。
+    字符串函数按 DLL 寄存器约定：EAX=&var / 值，EDX=值 / n（与原代码一致）。
+    桩 ≤ 0x200 字节（测试副本的测试入口固定在 cave+0x3D00）。
+    """
+    b = bytearray()
+    labels = {}
+    fixups = []
+
+    def op(*xs):
+        b.extend(xs)
+
+    def L(name):
+        labels[name] = len(b)
+
+    def rel(kind, name):
+        fixups.append((kind, len(b), name))
+        op(0, 0, 0, 0)
+
+    def jmp_l(name):
+        op(0xE9); rel('rel', name)
+
+    def jcc(cc, name):
+        op(0x0F, cc); rel('rel', name)
+
+    def call_l(name):
+        op(0xE8); rel('rel', name)
+
+    def call_va(target):
+        op(0xE8); fixups.append(('va', len(b), target)); op(0, 0, 0, 0)
+
+    # --- 序：保存寄存器/立帧/清空局部串变量 ---
+    op(0x53)                                      # push ebx
+    op(0x56)                                      # push esi
+    op(0x57)                                      # push edi
+    op(0x55)                                      # push ebp
+    op(0x8B, 0xEC)                                # mov ebp,esp
+    op(0x81, 0xEC, 0x40, 0x00, 0x00, 0x00)        # sub esp,0x40
+    op(0x89, 0x55, 0xFC)                          # mov [ebp-4],edx   ; &dst
+    op(0x89, 0x45, 0xF8)                          # mov [ebp-8],eax   ; src
+    # --- 运行时基址差（位置无关）：delta = 运行时stub - 链接stub，存 [ebp-0x2C] ---
+    op(0xE8, 0x00, 0x00, 0x00, 0x00)              # call $+5
+    base_ret_va = stub_va + len(b)                # 返回地址（pop eax 后 EAX 的值）
+    op(0x58)                                      # pop eax
+    op(0x2D); fixups.append(('imm32', len(b), base_ret_va)); op(0, 0, 0, 0)
+                                                  # sub eax,base_ret_va → delta
+    op(0x89, 0x45, 0xD4)                          # mov [ebp-0x2C],eax
+    op(0x31, 0xC0)                                # xor eax,eax
+    for d in (0xE4, 0xE0, 0xDC, 0xD8):            # -1C/-20/-24/-28 = 0
+        op(0x89, 0x45, d)                         # mov [ebp-x],eax
+
+    # --- 游戏进行中？ ---
+    op(0x8B, 0x45, 0xD4)                          # mov eax,[ebp-0x2C]
+    op(0x05); fixups.append(('imm32', len(b), TYPING_FLAG_VA)); op(0, 0, 0, 0)
+                                                  # add eax,TYPING_FLAG_VA
+    op(0x80, 0x38, 0x00)                          # cmp byte [eax],0
+    jcc(0x84, 'plain')                            # je .plain
+
+    # --- 输入脚本？ ---
+    op(0x8B, 0x45, 0xF8)                          # mov eax,[ebp-8]
+    op(0x8B, 0x55, 0xD4)                          # mov edx,[ebp-0x2C]
+    op(0x81, 0xC2); fixups.append(('imm32', len(b), INPUT_NEEDLE_VA)); op(0, 0, 0, 0)
+                                                  # add edx,needle地址
+    call_l('find')
+    op(0x83, 0xF8, 0xFF)                          # cmp eax,-1
+    jcc(0x85, 'rawecho')                          # jne .rawecho
+
+    # --- 取当前要打文本 P ---
+    op(0x8B, 0x55, 0xD4)                          # mov edx,[ebp-0x2C]
+    op(0x81, 0xC2); fixups.append(('imm32', len(b), PHRASE_VAR_VA)); op(0, 0, 0, 0)
+                                                  # add edx,PHRASE_VAR_VA
+    op(0x8B, 0x12)                                # mov edx,[edx]（全局的值）
+    op(0x89, 0x55, 0xF4)                          # mov [ebp-0xC],edx
+    op(0x85, 0xD2)                                # test edx,edx
+    jcc(0x84, 'plain')                            # je .plain
+    op(0x89, 0xD0)                                # mov eax,edx
+    call_l('strlen')
+    op(0x85, 0xC9)                                # test ecx,ecx
+    jcc(0x84, 'plain')                            # je .plain（P 为空）
+    op(0x89, 0x4D, 0xF0)                          # mov [ebp-0x10],ecx  ; plen
+    op(0x8B, 0x45, 0xF8)                          # mov eax,[ebp-8]
+    op(0x8B, 0x55, 0xF4)                          # mov edx,[ebp-0xC]
+    call_l('find')
+    op(0x83, 0xF8, 0xFF)                          # cmp eax,-1
+    jcc(0x84, 'plain')                            # je .plain（未找到）
+    op(0x89, 0x45, 0xEC)                          # mov [ebp-0x14],eax  ; o
+    op(0x8B, 0x45, 0xF8)                          # mov eax,[ebp-8]
+    call_l('strlen')
+    op(0x89, 0x4D, 0xE8)                          # mov [ebp-0x18],ecx  ; srclen
+
+    # --- 前缀：p := Copy(src,1,o)（DLL 小工具 0x4187B4） ---
+    op(0x8B, 0x45, 0xF8)                          # mov eax,[ebp-8]
+    op(0x8B, 0x55, 0xEC)                          # mov edx,[ebp-0x14]
+    op(0x8D, 0x4D, 0xE4)                          # lea ecx,[ebp-0x1C]
+    call_va(COPY_PREFIX_VA)
+
+    # --- 后缀：s := src; 去 P; SetLength 收尾 ---
+    op(0x8D, 0x45, 0xE0)                          # lea eax,[ebp-0x20]
+    op(0x8B, 0x55, 0xF8)                          # mov edx,[ebp-8]
+    call_va(LSTRASG_VA)
+    op(0x8D, 0x45, 0xE0)                          # lea eax,[ebp-0x20]
+    op(0x8B, 0x55, 0xE8)                          # mov edx,[ebp-0x18]
+    call_va(SETLEN_VA)                            # 写时复制 → 独占缓冲
+    op(0x8B, 0x7D, 0xE0)                          # mov edi,[ebp-0x20]
+    op(0x89, 0xFE)                                # mov esi,edi
+    op(0x8B, 0x45, 0xEC)                          # mov eax,[ebp-0x14]
+    op(0x01, 0xC6)                                # add esi,eax
+    op(0x8B, 0x45, 0xF0)                          # mov eax,[ebp-0x10]
+    op(0x01, 0xC6)                                # add esi,eax        ; esi = s+o+plen
+    op(0x8B, 0x4D, 0xE8)                          # mov ecx,[ebp-0x18]
+    op(0x2B, 0x4D, 0xEC)                          # sub ecx,[ebp-0x14]
+    op(0x2B, 0x4D, 0xF0)                          # sub ecx,[ebp-0x10]
+    op(0xF3, 0xA4)                                # rep movsb
+    op(0x8D, 0x45, 0xE0)                          # lea eax,[ebp-0x20]
+    op(0x8B, 0x55, 0xE8)                          # mov edx,[ebp-0x18]
+    op(0x2B, 0x55, 0xEC)                          # sub edx,[ebp-0x14]
+    op(0x2B, 0x55, 0xF0)                          # sub edx,[ebp-0x10]
+    call_va(SETLEN_VA)
+
+    # --- 转换两段（空串跳过，保持空） ---
+    op(0x8B, 0x45, 0xE4)                          # mov eax,[ebp-0x1C]
+    op(0x85, 0xC0)                                # test eax,eax
+    jcc(0x84, 'sk1')
+    op(0x8D, 0x55, 0xDC)                          # lea edx,[ebp-0x24]
+    call_va(CONVERT_ALL_VA)                       # c1 = C(前缀)
+    L('sk1')
+    op(0x8B, 0x45, 0xE0)                          # mov eax,[ebp-0x20]
+    op(0x85, 0xC0)                                # test eax,eax
+    jcc(0x84, 'sk2')
+    op(0x8D, 0x55, 0xD8)                          # lea edx,[ebp-0x28]
+    call_va(CONVERT_ALL_VA)                       # c2 = C(后缀)
+    L('sk2')
+
+    # --- out := c1 + P + c2 ---
+    op(0x8B, 0x45, 0xFC)                          # mov eax,[ebp-4]
+    op(0x8B, 0x55, 0xDC)                          # mov edx,[ebp-0x24]
+    call_va(LSTRASG_VA)
+    op(0x8B, 0x45, 0xFC)                          # mov eax,[ebp-4]
+    op(0x8B, 0x55, 0xF4)                          # mov edx,[ebp-0xC]
+    call_va(LSTRCAT_VA)
+    op(0x8B, 0x45, 0xFC)                          # mov eax,[ebp-4]
+    op(0x8B, 0x55, 0xD8)                          # mov edx,[ebp-0x28]
+    call_va(LSTRCAT_VA)
+    jmp_l('out')
+
+    L('rawecho')                                  # out := src（原文）
+    op(0x8B, 0x45, 0xFC)                          # mov eax,[ebp-4]
+    op(0x8B, 0x55, 0xF8)                          # mov edx,[ebp-8]
+    call_va(LSTRASG_VA)
+    jmp_l('out')
+
+    L('plain')                                    # 照常转换
+    op(0x8B, 0x45, 0xF8)                          # mov eax,[ebp-8]
+    op(0x8B, 0x55, 0xFC)                          # mov edx,[ebp-4]
+    call_va(CONVERT_ALL_VA)
+
+    L('out')
+    op(0x8B, 0xE5)                                # mov esp,ebp
+    op(0x5D)                                      # pop ebp
+    op(0x5F)                                      # pop edi
+    op(0x5E)                                      # pop esi
+    op(0x5B)                                      # pop ebx
+    op(0xC3)                                      # ret
+
+    # --- strlen：eax=ptr → ecx=len（保留 eax） ---
+    L('strlen')
+    op(0x50)                                      # push eax
+    op(0x31, 0xC9)                                # xor ecx,ecx
+    L('sl_loop')
+    op(0x80, 0x38, 0x00)                          # cmp byte [eax],0
+    jcc(0x84, 'sl_done')
+    op(0x40)                                      # inc eax
+    op(0x41)                                      # inc ecx
+    jmp_l('sl_loop')
+    L('sl_done')
+    op(0x58)                                      # pop eax
+    op(0xC3)                                      # ret
+
+    # --- find：eax=hay, edx=needle → eax=偏移 或 -1（保留 ebx/esi/edi） ---
+    L('find')
+    op(0x53)                                      # push ebx
+    op(0x56)                                      # push esi
+    op(0x57)                                      # push edi
+    op(0x89, 0xC3)                                # mov ebx,eax      ; hay 基准
+    op(0x89, 0xD6)                                # mov esi,edx      ; needle
+    op(0x89, 0xF7)                                # mov edi,esi
+    L('nl_loop')
+    op(0x80, 0x3F, 0x00)                          # cmp byte [edi],0
+    jcc(0x84, 'nl_done')
+    op(0x47)                                      # inc edi
+    jmp_l('nl_loop')
+    L('nl_done')
+    op(0x29, 0xF7)                                # sub edi,esi      ; nl
+    op(0x85, 0xFF)                                # test edi,edi
+    jcc(0x84, 'find_fail')
+    op(0x89, 0xD8)                                # mov eax,ebx
+    L('outer')
+    op(0x80, 0x38, 0x00)                          # cmp byte [eax],0
+    jcc(0x84, 'find_fail')
+    op(0x31, 0xC9)                                # xor ecx,ecx
+    L('f_cmp')
+    op(0x39, 0xF9)                                # cmp ecx,edi
+    jcc(0x84, 'find_hit')
+    op(0x8A, 0x14, 0x08)                          # mov dl,[eax+ecx]
+    op(0x84, 0xD2)                                # test dl,dl
+    jcc(0x84, 'find_fail')                        # 干草已到末尾
+    op(0x8A, 0x34, 0x0E)                          # mov dh,[esi+ecx]
+    op(0x38, 0xF2)                                # cmp dl,dh
+    jcc(0x85, 'f_next')
+    op(0x41)                                      # inc ecx
+    jmp_l('f_cmp')
+    L('f_next')
+    op(0x40)                                      # inc eax
+    jmp_l('outer')
+    L('find_hit')
+    op(0x29, 0xD8)                                # sub eax,ebx
+    jmp_l('find_done')
+    L('find_fail')
+    op(0xB8, 0xFF, 0xFF, 0xFF, 0xFF)              # mov eax,-1
+    L('find_done')
+    op(0x5F)                                      # pop edi
+    op(0x5E)                                      # pop esi
+    op(0x5B)                                      # pop ebx
+    op(0xC3)                                      # ret
+
+    # --- 回填 ---
+    for kind, pos, name in fixups:
+        if kind == 'rel':
+            struct.pack_into('<i', b, pos, labels[name] - (pos + 4))
+        elif kind == 'va':
+            struct.pack_into('<i', b, pos, name - (stub_va + pos + 4))
+        elif kind == 'imm32':
+            struct.pack_into('<I', b, pos, name & 0xFFFFFFFF)
+    assert len(b) <= 0x200, hex(len(b))   # 测试入口在 cave+0x3D00，桩不得越过
+    return bytes(b)
+
+
 def _build_closebox_stub(cave_va):
     """关游戏窗体的辅助桩（主块 .cave+0x400，由 stubA 的 .setpend 调用，
     ebx = 运行时 cave+0x60B）：
@@ -1005,6 +1280,16 @@ def patch_extra_link(data: bytearray) -> bytearray:
         '<i', cave_va + CAVE_Q_OFF - (TYPING_CLOSEQ_VA + 5))
     data[off + 5:off + 9] = b'\x90' * 4
 
+    # 打字定向屏蔽：游戏进行中只豁免"玩家输入脚本"与"要打文本"子串，提示语等
+    # 照常转换；退出游戏恢复；未游戏/开关全关时与原行为完全一致
+    stubG = _build_typing_gate_stub(cave_va + TYPING_GATE_STUB_OFF)
+    data[raw + TYPING_GATE_STUB_OFF:raw + TYPING_GATE_STUB_OFF + len(stubG)] = stubG
+    off = TYPING_GATE_HOOK_VA - 0x400C00
+    if bytes(data[off:off + 5]) != TYPING_GATE_HOOK_ORIG:
+        raise RuntimeError('打字定向屏蔽补丁：挂钩点原始字节不匹配')
+    data[off:off + 5] = b'\xE8' + struct.pack(
+        '<i', cave_va + TYPING_GATE_STUB_OFF - (TYPING_GATE_HOOK_VA + 5))
+
     # 桩 B：双击判定（choosing / 输入框 / 视力游戏 → 无反应；其他游戏重放菜单）
     stubB = _build_dc_status_stub(cave_va + CAVE_B_OFF)
     data[raw + CAVE_B_OFF:raw + CAVE_B_OFF + len(stubB)] = stubB
@@ -1014,7 +1299,7 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 8] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_B_OFF - (DC_ENTRY_VA + 5))) + b'\x90' * 3
 
-    print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定 @ RVA 0x{rva:X}')
+    print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定/打字定向屏蔽 @ RVA 0x{rva:X}')
     return data
 
 
