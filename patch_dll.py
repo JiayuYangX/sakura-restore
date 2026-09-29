@@ -33,7 +33,8 @@ first.dll：
     的 call 重定向到 .cave 小桩：先补完原调用，再对「海原雄山」常量调用一次注册。
 
   RSS 链接补丁（OnAnchorSelect 打开浏览器）：兜底分支入口重定向到 .cave 第二桩：
-    Ref0 以 "http" 开头则在节内缓冲拼出 "\\![open,browser,<URL>]" 返回。
+    Ref0 以 "http" 开头则拼出 "\\C + 关超时 + \\j[<URL>]" 返回——\\C 追记到当前气球
+    （不开始新一轮 talk → 新闻气泡不关，可连续点击；社区标准模式，见 URL_RESP_PREFIX）。
 
   游戏 / 双击相关补丁（.cave 内若干桩，详见各构建函数文档串）：
     - 桩A（响应监控，挂 0x47A399）：输入框标志、视力游戏状态（MARK/EYEBUSY）、
@@ -245,12 +246,19 @@ LSTRASG_FUNC = 0x403C58            # Delphi 字符串赋值
 FALLBACK_STR = 0x48769C            # 兜底常量「\0\s0……\w8\w8\s4ん？」（翻译表改写）
 
 CAVE2_OFF = 0x20                   # 第二桩在 .cave 内的偏移
-PREFIX_OFF = 0x100                 # "\![open,browser," 常量
+PREFIX_OFF = 0x3A00                # 响应前缀常量（见 URL_RESP_PREFIX；0x100 原位只够 16B）
 BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
+# RSS 锚点响应前缀——社区标准模式（emily4 等成熟人格的 OnAnchorSelect 处理）：
+#   \C                       → 追记到"当前气球"（不开始新一轮 talk → 气泡不关！）
+#   \![set,choicetimeout,-1] → 关掉选择超时
+#   \![set,balloontimeout,-1]→ 关掉气球超时
+#   \j[                      → 打开浏览器（后接 URL，桩里再补 ']'）
+URL_RESP_PREFIX = rb'\C\![set,choicetimeout,-1]\![set,balloontimeout,-1]\j['
 
 # ---- 游戏/双击相关补丁的 .cave 数据区 ----
 # .cave 布局（0x2000 字节追加节；改动后应做区间重叠检查）：
-#   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x100 "\![open,browser,"
+#   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x3A00 响应前缀 "\C…\j["（54B，
+#   挪到 IME 字符串(止于 0x39E5)与打字闸门桩(0x3B00)之间的空闲段；0x100 原位过小）
 #   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
 #   0x1F8-0x3FF 链接桩2 响应缓冲（string 头 + 数据，链接文档）
 #   0x380 视力双击小段 | 0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
@@ -350,7 +358,8 @@ DC_DONE_VA = 0x478848              # 处理完成的共同出口（清响应 →
 
 def _build_url_stub(rva):
     """OnAnchorSelect 桩：Ref0=[ebp-0x1c]。http 开头 ->
-    拼接 "\\![open,browser," + Ref0 + "]" 到节内缓冲并返回；否则原兜底。"""
+    拼接 URL_RESP_PREFIX（\\C 追记 + 关超时 + \\j[）+ Ref0 + "]" 到节内缓冲并返回；
+    否则原兜底。\\C = 追记到当前气球，新闻气泡不会被新一轮 talk 顶掉。"""
     b = bytearray()
     va = lambda i: rva + i
     fb_target = va(112)          # .fb 标签（见下面的偏移注释）
@@ -371,14 +380,15 @@ def _build_url_stub(rva):
     b += b'\x0F\x87' + rel32(fb_target, 43)           # 41: ja .fb
     # 注意：ebx = 本桩内 pop 的地址 = 桩VA+8 = 节VA + (CAVE2_OFF+8)，
     # 所以指向节内偏移时要减去 (CAVE2_OFF + 8)。
+    assert len(URL_RESP_PREFIX) == 54, len(URL_RESP_PREFIX)
     b += b'\x8D\x93' + struct.pack('<i', BUF_DATA_OFF - CAVE2_OFF - 16)  # 47: lea edx,[ebx+buf-8]
     b += b'\xC7\x02\xFF\xFF\xFF\xFF'                  # 53: mov dword [edx],-1
-    b += b'\x8D\x41\x11'                              # 59: lea eax,[ecx+17]
+    b += b'\x8D\x41' + bytes([len(URL_RESP_PREFIX) + 1])   # 59: lea eax,[ecx+前缀长+1]（含 ']'）
     b += b'\x89\x42\x04'                              # 62: mov [edx+4],eax
     b += b'\x8D\xB3' + struct.pack('<i', PREFIX_OFF - CAVE2_OFF - 8)  # 65: lea esi,[ebx+prefix]
     b += b'\x8D\xBA\x08\x00\x00\x00'                  # 71: lea edi,[edx+8]
     b += b'\x51'                                      # 77: push ecx
-    b += b'\xB9\x10\x00\x00\x00'                      # 78: mov ecx,16
+    b += b'\xB9' + struct.pack('<I', len(URL_RESP_PREFIX))   # 78: mov ecx,前缀长
     b += b'\xF3\xA4'                                  # 83: rep movsb
     b += b'\x59'                                      # 85: pop ecx
     b += b'\x8B\x75\xE4'                              # 86: mov esi,[ebp-0x1c]
@@ -1521,7 +1531,7 @@ def patch_extra_link(data: bytearray) -> bytearray:
     # 桩 2：OnAnchorSelect http
     stub2 = _build_url_stub(cave_va + CAVE2_OFF)
     data[raw + CAVE2_OFF:raw + CAVE2_OFF + len(stub2)] = stub2
-    data[raw + PREFIX_OFF:raw + PREFIX_OFF + 16] = b'\\![open,browser,'
+    data[raw + PREFIX_OFF:raw + PREFIX_OFF + len(URL_RESP_PREFIX)] = URL_RESP_PREFIX
     if bytes(data[URL_HOOK_OFF:URL_HOOK_OFF + 8]) != URL_HOOK_ORIG:
         raise RuntimeError('RSS 链接补丁：重定向点原始字节不匹配')
     data[URL_HOOK_OFF:URL_HOOK_OFF + 5] = (
