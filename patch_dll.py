@@ -45,6 +45,8 @@ first.dll：
     - 打字定向屏蔽（挂 0x47239D 的 ConvertAll 调用处）：打字游戏进行中只豁免
       "玩家输入脚本"与"要打文本"子串，提示语/结算语照常转换；退出游戏恢复原行为
       （详见 _build_typing_gate_stub 与 docs/§8）。
+    - 重力语中文化（对话 0x418D21 / 菜单窗口 0x46FC03 两处 call 0x417048 → GBK 变换桩）：
+      假名 T1 + 汉字 T2 + [ ] 指令区原样 + % 保留（不动搜索的 URL 编码调用点 0x476548）。
 
   高分屏缩放与拖动：
     - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
@@ -257,8 +259,10 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 #          数据可达 0x1F7B，故 0x1F7C 之后才空)
 #   高分屏包装桩：request@0x170（空闲段 0x167-0x1F7）| load@0x1F7C（尾段）| 数据@0xB0
 #   （PSET/字符串，占用 0xA7-0xFF 空闲段）
-#   拖动包装桩 @0x2000（需 cave ≥ 0x2200；调用点 6 处 SC_DRAGMOVE）
-# .cave 节大小 0x2200（原 0x2000，+0x200 放拖动包装桩）。
+#   拖动包装桩 @0x2000（调用点 6 处 SC_DRAGMOVE）
+#   IME 层 0x2810-0x39E5 | 打字定向屏蔽桩 @0x3B00（止于 0x3CDE；测试副本入口区 0x3D00-0x3DF0 保留）
+#   重力语变换桩 @0x4000（对话/窗口两个调用点共用）
+# .cave 节大小 0x6000（0x2000 → 0x2200 拖动 → 0x4000 IME → 0x6000 重力语桩）。
 
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 游戏/输入框标志）
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
@@ -310,6 +314,25 @@ SETLEN_VA = 0x404174               # Delphi SetLength（var, n；含写时复制
 COPY_PREFIX_VA = 0x4187B4          # out := Copy(s, 1, n)（DLL 内部小工具，按字节）
 INPUT_NEEDLE_VA = 0x46EBFC         # '\![raise,OnTypinggameInput,' ANSI 常量
 PHRASE_VAR_VA = 0x4B29F8           # 当前"要打文本" ANSI 串全局
+
+# 重力语中文化（对话 0x418D21 / 菜单窗口 0x46FC03 两处 call 0x417048 → 新桩）：
+#   原版核心三步 = 转义(0x417048) + CharLowerBuffA(0x408358) + 解码(0x4171A0)：
+#   转义把双字节对的尾字节临时裸露成 ASCII，小写步把 A-Z 压成 a-z
+#   （尾字节 0x41-0x5A 的字符因此 +0x20 变字），解码还原 %XX。
+#   GBK 汉字尾字节为 A1-FE，永不命中 → 中文版形同失效（只剩 ASCII 小写）。
+#   本桩替换"转义"一环（两个调用点；百度搜索的 URL 编码调用点 0x476548 保持原样）：
+#     - ASCII A-Z → a-z；
+#     - 片假名行（前导 A5）尾字节 A2-BB → +0x20（原版规则 0x41-0x5A 的 GBK
+#       精确等价：リンゴ→リンピ、ガード→ヌード、アックス→ヂッハベ）；
+#     - 其余双字节尾字节 C1-DA → +0x20（原版规则平移 0x80 的等价形，T2）；
+#     - [ ] 区逐字节原样（脚本指令安全；并补原版"方括号内 %xx 被解码吃掉"的洞）；
+#     - '%' → %25（保住环境变量标签 %month/%* 与字面百分号；两路径一致）。
+#   输出全部为小写 %xx 转义：对后续"小写+解码"严格幂等/可逆（不依赖 CharLowerBuffA
+#   的 DBCS 行为），解码后即最终文本。
+GRAVITY_ESCAPE_VA = 0x417048       # 原转义函数（搜索 URL 编码共用一个调用点，勿动本体）
+GRAVITY_HOOK_DLG_VA = 0x418D21     # 对话管线内 call 0x417048
+GRAVITY_HOOK_WIN_VA = 0x46FC03     # Tjtogvform.editChange 内 call 0x417048
+GRAVITY_STUB_OFF = 0x4000          # 新桩（cave 扩至 0x6000 后的空闲段）
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -954,6 +977,213 @@ def _build_typing_gate_stub(stub_va):
     return bytes(b)
 
 
+def _build_gravity_stub(stub_va):
+    """重力语中文化的 GBK 变换桩（.cave+0x4000；替换 0x418D21 / 0x46FC03 两处
+    call 0x417048"转义"调用，对话与菜单窗口共用）。
+
+    进入时 EAX=待翻译文本（ANSI 串值）、EDX=输出串变量地址（与原转义调用一致）。
+    输出 = 全小写 %xx 转义文本，交给后续原有的"小写(0x408358)+解码(0x4171A0)"：
+      - 输出无大写 ASCII、无裸 %，两步对它幂等/严格可逆（不依赖 CharLowerBuffA 的
+        DBCS 行为）；解码后即最终文本（对话管线随后的 0x01→% 还原不受影响）。
+    规则：ASCII A-Z→a-z；片假名行(前导 A5)尾字节 A2-BB→+0x20（原版 SJIS 规则
+          0x41-0x5A 的 GBK 精确等价：リンゴ→リンピ、ガード→ヌード、アックス→ヂッハベ）；
+          其余双字节尾字节 C1-DA→+0x20（T2）；[ ] 区逐字节原样（脚本安全）；
+          '%'→%25；孤立/非法字节原样转义保留。
+    一次扫描 + 3×len 预分配 + 收尾 SetLength 收缩（免二次计数扫描）。
+    位置无关：只用相对 call（E8）与字节立即数，无绝对地址引用。
+    """
+    b = bytearray()
+    labels = {}
+    fixups = []
+
+    def op(*xs):
+        b.extend(xs)
+
+    def L(name):
+        labels[name] = len(b)
+
+    def rel(name):
+        fixups.append(('rel', len(b), name))
+        op(0, 0, 0, 0)
+
+    def jmp_l(name):
+        op(0xE9); rel(name)
+
+    def jcc(cc, name):
+        op(0x0F, cc); rel(name)
+
+    def call_l(name):
+        op(0xE8); rel(name)
+
+    def call_va(target):
+        op(0xE8); fixups.append(('va', len(b), target)); op(0, 0, 0, 0)
+
+    # --- 序 ---
+    op(0x53)                                     # push ebx
+    op(0x56)                                     # push esi
+    op(0x57)                                     # push edi
+    op(0x55)                                     # push ebp
+    op(0x8B, 0xEC)                               # mov ebp,esp
+    op(0x81, 0xEC, 0x20, 0x00, 0x00, 0x00)       # sub esp,0x20
+    op(0x89, 0x55, 0xFC)                         # mov [ebp-4],edx   ; &out
+    op(0x89, 0x45, 0xF8)                         # mov [ebp-8],eax   ; src
+    op(0xC6, 0x45, 0xF0, 0x00)                   # mov byte [ebp-0x10],0（bracket）
+    op(0x85, 0xC0)                               # test eax,eax（eax=src）
+    jcc(0x84, 'empty')                           # je .empty
+
+    # --- len = strlen(src) ---
+    op(0x89, 0xC6)                               # mov esi,eax
+    op(0x31, 0xC9)                               # xor ecx,ecx
+    L('len_loop')
+    op(0x80, 0x3E, 0x00)                         # cmp byte [esi],0
+    jcc(0x84, 'len_done')
+    op(0x46)                                     # inc esi
+    op(0x41)                                     # inc ecx
+    jmp_l('len_loop')
+    L('len_done')
+    op(0x8D, 0x14, 0x49)                         # lea edx,[ecx+ecx*2]（3×len）
+    op(0x8B, 0x45, 0xFC)                         # mov eax,[ebp-4]
+    call_va(SETLEN_VA)                           # SetLength(&out, 3*len)
+    op(0x8B, 0x45, 0xFC)                         # mov eax,[ebp-4]
+    op(0x8B, 0x38)                               # mov edi,[eax]      ; W
+    op(0x89, 0x7D, 0xF4)                         # mov [ebp-0xC],edi  ; base
+    op(0x8B, 0x75, 0xF8)                         # mov esi,[ebp-8]
+
+    # --- 扫描/发射 ---
+    L('scan')
+    op(0x8A, 0x06)                               # mov al,[esi]
+    op(0x84, 0xC0)                               # test al,al
+    jcc(0x84, 'done')
+    op(0x3C, 0x5B)                               # cmp al,0x5B '['
+    jcc(0x85, 'chk_5d')
+    op(0xC6, 0x45, 0xF0, 0x01)                   # mov byte [ebp-0x10],1
+    op(0x88, 0x07)                               # mov [edi],al
+    op(0x47)                                     # inc edi
+    op(0x46)                                     # inc esi
+    jmp_l('scan')
+    L('chk_5d')
+    op(0x3C, 0x5D)                               # cmp al,0x5D ']'
+    jcc(0x85, 'chk_br')
+    op(0xC6, 0x45, 0xF0, 0x00)                   # mov byte [ebp-0x10],0
+    op(0x88, 0x07)                               # mov [edi],al
+    op(0x47)
+    op(0x46)
+    jmp_l('scan')
+    L('chk_br')
+    op(0x80, 0x7D, 0xF0, 0x00)                   # cmp byte [ebp-0x10],0
+    jcc(0x85, 'esc1')                            # jne .esc1（方括号内 → 逐字节原样）
+    op(0x3C, 0x25)                               # cmp al,'%'
+    jcc(0x84, 'esc1')
+    op(0xA8, 0x80)                               # test al,0x80
+    jcc(0x85, 'pair')
+    op(0x3C, 0x41)                               # cmp al,'A'
+    jcc(0x82, 'raw1')                            # jb
+    op(0x3C, 0x5A)                               # cmp al,'Z'
+    jcc(0x87, 'raw1')                            # ja
+    op(0x04, 0x20)                               # add al,0x20
+    L('raw1')
+    op(0x88, 0x07)                               # mov [edi],al
+    op(0x47)
+    op(0x46)
+    jmp_l('scan')
+    L('esc1')
+    call_l('emit_esc')
+    op(0x46)                                     # inc esi
+    jmp_l('scan')
+    L('pair')
+    op(0x8A, 0x5E, 0x01)                         # mov bl,[esi+1]
+    op(0x84, 0xDB)                               # test bl,bl
+    jcc(0x84, 'lone')
+    op(0x80, 0xFB, 0x40)                         # cmp bl,0x40
+    jcc(0x82, 'lone')                            # jb
+    op(0x80, 0xFB, 0xFE)                         # cmp bl,0xFE
+    jcc(0x87, 'lone')                            # ja（0xFF）
+    op(0x80, 0xFB, 0x7F)                         # cmp bl,0x7F
+    jcc(0x84, 'lone')                            # je
+    op(0x3C, 0xA5)                               # cmp al,0xA5（片假名行）
+    jcc(0x84, 'kana')
+    op(0x80, 0xFB, 0xC1)                         # cmp bl,0xC1
+    jcc(0x82, 'pair_emit')                       # jb
+    op(0x80, 0xFB, 0xDA)                         # cmp bl,0xDA
+    jcc(0x87, 'pair_emit')                       # ja
+    op(0x80, 0xC3, 0x20)                         # add bl,0x20（T2）
+    jmp_l('pair_emit')
+    L('kana')                                    # 原版 SJIS 尾字节 0x41-0x5A 的 GBK 精确等价：
+    op(0x80, 0xFB, 0xA2)                         # cmp bl,0xA2（0x41+0x61）
+    jcc(0x82, 'pair_emit')                       # jb
+    op(0x80, 0xFB, 0xBB)                         # cmp bl,0xBB（0x5A+0x61）
+    jcc(0x87, 'pair_emit')                       # ja
+    op(0x80, 0xC3, 0x20)                         # add bl,0x20（ゴ→ピ、ガ→ヌ、ア→ヂ…）
+    L('pair_emit')
+    call_l('emit_esc')                           # 前导
+    op(0x88, 0xD8)                               # mov al,bl
+    call_l('emit_esc')                           # 尾字节
+    op(0x83, 0xC6, 0x02)                         # add esi,2
+    jmp_l('scan')
+    L('lone')
+    call_l('emit_esc')
+    op(0x46)                                     # inc esi
+    jmp_l('scan')
+
+    # --- 收尾 ---
+    L('done')
+    op(0x89, 0xFA)                               # mov edx,edi
+    op(0x2B, 0x55, 0xF4)                         # sub edx,[ebp-0xC]
+    op(0x8B, 0x45, 0xFC)                         # mov eax,[ebp-4]
+    call_va(SETLEN_VA)                           # SetLength(&out, written)
+    op(0x8B, 0x45, 0xFC)                         # mov eax,[ebp-4]
+    op(0x8B, 0x00)                               # mov eax,[eax]
+    op(0x89, 0xFA)                               # mov edx,edi
+    op(0x2B, 0x55, 0xF4)                         # sub edx,[ebp-0xC]
+    op(0xC6, 0x04, 0x10, 0x00)                   # mov byte [eax+edx],0
+    jmp_l('epi')
+    L('empty')
+    op(0x31, 0xD2)                               # xor edx,edx
+    op(0x8B, 0x45, 0xFC)                         # mov eax,[ebp-4]
+    call_va(SETLEN_VA)                           # out := ''
+    L('epi')
+    op(0x8B, 0xE5)                               # mov esp,ebp
+    op(0x5D); op(0x5F); op(0x5E); op(0x5B)       # pop ebp/edi/esi/ebx
+    op(0xC3)                                     # ret
+
+    # --- 子程序：emit_esc（al=字节 → 写 "%xx" 小写 hex，edi+=3；clobber ah/cl） ---
+    L('emit_esc')
+    op(0xC6, 0x07, 0x25)                         # mov byte [edi],0x25
+    op(0x47)                                     # inc edi
+    op(0x88, 0xC4)                               # mov ah,al
+    op(0xC0, 0xEC, 0x04)                         # shr ah,4
+    op(0x88, 0xC1)                               # mov cl,al
+    op(0x80, 0xE1, 0x0F)                         # and cl,0x0F
+    op(0x80, 0xFC, 0x0A)                         # cmp ah,10
+    jcc(0x82, 'hi_d')                            # jb
+    op(0x80, 0xC4, 0x57)                         # add ah,0x57（'a'-10）
+    jmp_l('hi_s')
+    L('hi_d')
+    op(0x80, 0xC4, 0x30)                         # add ah,0x30
+    L('hi_s')
+    op(0x88, 0x27)                               # mov [edi],ah
+    op(0x47)
+    op(0x80, 0xF9, 0x0A)                         # cmp cl,10
+    jcc(0x82, 'lo_d')
+    op(0x80, 0xC1, 0x57)
+    jmp_l('lo_s')
+    L('lo_d')
+    op(0x80, 0xC1, 0x30)
+    L('lo_s')
+    op(0x88, 0x0F)                               # mov [edi],cl
+    op(0x47)
+    op(0xC3)                                     # ret
+
+    # --- 回填 ---
+    for kind, pos, name in fixups:
+        if kind == 'rel':
+            struct.pack_into('<i', b, pos, labels[name] - (pos + 4))
+        elif kind == 'va':
+            struct.pack_into('<i', b, pos, name - (stub_va + pos + 4))
+    assert len(b) < 0x600, hex(len(b))
+    return bytes(b)
+
+
 def _build_closebox_stub(cave_va):
     """关游戏窗体的辅助桩（主块 .cave+0x400，由 stubA 的 .setpend 调用，
     ebx = 运行时 cave+0x60B）：
@@ -1221,7 +1451,7 @@ def _build_dc_status_stub(rva):
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（输入框标志、
     游戏状态、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(IME_CAVE_SIZE)  # 原 0x2800，IME 层扩至 0x4000
+    blob = bytearray(IME_CAVE_SIZE)  # 原 0x2800 → IME 层 0x4000 → 重力语桩 0x6000
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1290,6 +1520,18 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 5] = b'\xE8' + struct.pack(
         '<i', cave_va + TYPING_GATE_STUB_OFF - (TYPING_GATE_HOOK_VA + 5))
 
+    # 重力语变换：对话（0x418D21）与菜单窗口（0x46FC03）两处 call 0x417048 → GBK 变换桩；
+    # 百度搜索的 URL 编码调用点（0x476548）保持原样不动
+    stubV = _build_gravity_stub(cave_va + GRAVITY_STUB_OFF)
+    data[raw + GRAVITY_STUB_OFF:raw + GRAVITY_STUB_OFF + len(stubV)] = stubV
+    for site_va, site_label in ((GRAVITY_HOOK_DLG_VA, '对话'), (GRAVITY_HOOK_WIN_VA, '窗口')):
+        off = site_va - 0x400C00
+        expect = b'\xE8' + struct.pack('<i', GRAVITY_ESCAPE_VA - (site_va + 5))
+        if bytes(data[off:off + 5]) != expect:
+            raise RuntimeError(f'重力语变换补丁：{site_label}挂钩点原始字节不匹配')
+        data[off:off + 5] = b'\xE8' + struct.pack(
+            '<i', cave_va + GRAVITY_STUB_OFF - (site_va + 5))
+
     # 桩 B：双击判定（choosing / 输入框 / 视力游戏 → 无反应；其他游戏重放菜单）
     stubB = _build_dc_status_stub(cave_va + CAVE_B_OFF)
     data[raw + CAVE_B_OFF:raw + CAVE_B_OFF + len(stubB)] = stubB
@@ -1299,7 +1541,7 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 8] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_B_OFF - (DC_ENTRY_VA + 5))) + b'\x90' * 3
 
-    print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定/打字定向屏蔽 @ RVA 0x{rva:X}')
+    print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定/打字定向屏蔽/重力语中文化 @ RVA 0x{rva:X}')
     return data
 
 
@@ -2447,7 +2689,8 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #   目标函数经 GetModuleHandleA/GetProcAddress 于安装时解析（IAT 槽 0x4B31E4/0x4B31E0）。
 # cave 布局（0x2810 起）：数据 0x2810-0x28FF | CTS 桩 0x2A00 | SEL 桩 0x2C00 | CS 桩 0x3000 |
 #   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3600 | hook1 0x36E0 | unhook1 0x3760 |
-#   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x4000）
+#   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x4000；
+#   0x3B00 打字屏蔽桩、0x4000 重力语变换桩为后续新增，cave 已扩至 0x6000）
 
 IME_BASE_OFF = 0x2810
 IME_PTR_CTS = 0x00
@@ -2500,7 +2743,7 @@ IME_RESTORE = 0x3600
 IME_WRAP_LOAD = 0x3800
 IME_WRAP_UNLOAD = 0x3840
 IME_STR = 0x3900
-IME_CAVE_SIZE = 0x4000
+IME_CAVE_SIZE = 0x6000              # 0x4000（IME 尽头）→ 0x6000：尾部空段放重力语变换桩
 IME_HOOK1 = 0x36E0
 IME_UNHOOK1 = 0x3760
 IME_LOAD_WRAP_ORIG = 0x1F7C

@@ -519,7 +519,7 @@ Offset,Length,Type,Text
 0x64B74,51,code,可执行文件的完整路径（可通过拖放文件输入）
 0x653E8,51,code,\0\s1唔。\w8\w8数量真多啊。\w8\w8\n\n\s[20]
 0x65424,22,code,……\w8\w8好。\w8\w8
-0x65458,10,code,\n\n好的。
+0x65458,10,code,\n\n好嘞。
 0x65480,12,code,面骰子
 0x65498,24,code,枚……\w8\w8好。\w8\w8
 0x65690,179,code,\0\s0也就是所谓的骰子……\w8\w8吧。\w8\w8\1\s0是骰子呢。\w8\w8\0\n\n基本上就是在编辑框里输入骰子表达式，然后按 Enter 即可。\w8\w8\n\n比如 2d6+10 之类的，还可以进行加减运算哦。
@@ -997,7 +997,7 @@ Offset,Length,Type,Text
 0x7E2B8,34,code,\0乌纽别多嘴！
 0x7E2F4,109,code,"\0\s[20]获取IP地址中……\w8\w8\n\n\![execute,http-get,""http://usada.sakura.vg/ip.php""]\![raise,On_IP_got]"
 0x7E394,25,code,\0\s0获取完成。\w8\w8\n\n
-0x7E3C8,16,code,好的。\w8\w8\n\n
+0x7E3C8,16,code,好嘞。\w8\w8\n\n
 0x7E3E4,32,code,要复制到剪贴板吗？\n\n
 0x7E410,36,code,"\![*]\q[好的,executecopyipaddress]\n"
 0x7E440,24,code,"\![*]\q[不用了,cancel]\n"
