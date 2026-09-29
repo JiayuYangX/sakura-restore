@@ -45,8 +45,9 @@ first.dll：
     - 打字定向屏蔽（挂 0x47239D 的 ConvertAll 调用处）：打字游戏进行中只豁免
       "玩家输入脚本"与"要打文本"子串，提示语/结算语照常转换；退出游戏恢复原行为
       （详见 _build_typing_gate_stub 与 docs/§8）。
-    - 重力语中文化（对话 0x418D21 / 菜单窗口 0x46FC03 两处 call 0x417048 → GBK 变换桩）：
-      假名 T1 + 汉字 T2 + [ ] 指令区原样 + % 保留（不动搜索的 URL 编码调用点 0x476548）。
+    - 重力语中文化（对话 0x418D21 / 菜单窗口 0x46FC03 两处 call 0x417048 → 表驱动变换桩）：
+      原版会变的 SJIS 字符凡在 GBK 存在的逐字复刻（1044 条映射表）+ [ ] 指令区原样 +
+      % 保留（不动搜索的 URL 编码调用点 0x476548）。
 
   高分屏缩放与拖动：
     - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
@@ -322,9 +323,10 @@ PHRASE_VAR_VA = 0x4B29F8           # 当前"要打文本" ANSI 串全局
 #   GBK 汉字尾字节为 A1-FE，永不命中 → 中文版形同失效（只剩 ASCII 小写）。
 #   本桩替换"转义"一环（两个调用点；百度搜索的 URL 编码调用点 0x476548 保持原样）：
 #     - ASCII A-Z → a-z；
-#     - 片假名行（前导 A5）尾字节 A2-BB → +0x20（原版规则 0x41-0x5A 的 GBK
-#       精确等价：リンゴ→リンピ、ガード→ヌード、アックス→ヂッハベ）；
-#     - 其余双字节尾字节 C1-DA → +0x20（原版规则平移 0x80 的等价形，T2）；
+#     - 表驱动逐字复刻：把"原版会变的 SJIS 字符（尾字节 0x41-0x5A → +0x20）"里
+#       凡在 GBK 也存在的逐字映射成表（假名/汉字/符号共约 1044 条，见
+#       _build_gravity_map；右→影、宇→映、。→｜、！→（、リンゴ→リンピ……），
+#       命中则换、未命中/不在 GBK 一律原样；
 #     - [ ] 区逐字节原样（脚本指令安全；并补原版"方括号内 %xx 被解码吃掉"的洞）；
 #     - '%' → %25（保住环境变量标签 %month/%* 与字面百分号；两路径一致）。
 #   输出全部为小写 %xx 转义：对后续"小写+解码"严格幂等/可逆（不依赖 CharLowerBuffA
@@ -333,6 +335,7 @@ GRAVITY_ESCAPE_VA = 0x417048       # 原转义函数（搜索 URL 编码共用�
 GRAVITY_HOOK_DLG_VA = 0x418D21     # 对话管线内 call 0x417048
 GRAVITY_HOOK_WIN_VA = 0x46FC03     # Tjtogvform.editChange 内 call 0x417048
 GRAVITY_STUB_OFF = 0x4000          # 新桩（cave 扩至 0x6000 后的空闲段）
+GRAVITY_TABLE_OFF = 0x4800         # 逐字映射表（4B/条 + 0000 终结；约 0x1052 字节）
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -977,7 +980,42 @@ def _build_typing_gate_stub(stub_va):
     return bytes(b)
 
 
-def _build_gravity_stub(stub_va):
+def _build_gravity_map():
+    """生成重力语逐字映射表（4 字节/条：GBK 源对 + GBK 目标对；00 00 终结）。
+
+    规格：原版会影响的所有 SJIS 字符（双字节、尾字节 0x41-0x5A → +0x20），
+    凡"源与结果字形"都存在于 GBK 的，逐字映射（行为与原版相同）；
+    其余（SJIS 不存在 / 不受影响 / 不在 GBK）一律保持不变。
+    实测：假名 32 + 汉字 946 + 符号 66 = 1044 条（如 右→影、宇→映、。→｜、！→（、
+    リンゴ→リンピ……与日文原版逐字一致；日文标点也按原版参与）。
+    """
+    entries = bytearray()
+    count = 0
+    for hi in range(0x81, 0xFD):
+        if hi == 0x7F:
+            continue
+        for lo in range(0x41, 0x5B):
+            try:
+                ch = bytes([hi, lo]).decode('cp932')
+                ch2 = bytes([hi, lo + 0x20]).decode('cp932')
+            except UnicodeError:
+                continue
+            if len(ch) != 1 or len(ch2) != 1:
+                continue
+            try:
+                g1 = ch.encode('gbk')
+                g2 = ch2.encode('gbk')
+            except UnicodeError:
+                continue
+            if len(g1) != 2 or len(g2) != 2:
+                continue
+            entries += g1 + g2
+            count += 1
+    entries += b'\x00\x00'
+    return bytes(entries), count
+
+
+def _build_gravity_stub(stub_va, table_va):
     """重力语中文化的 GBK 变换桩（.cave+0x4000；替换 0x418D21 / 0x46FC03 两处
     call 0x417048"转义"调用，对话与菜单窗口共用）。
 
@@ -985,12 +1023,13 @@ def _build_gravity_stub(stub_va):
     输出 = 全小写 %xx 转义文本，交给后续原有的"小写(0x408358)+解码(0x4171A0)"：
       - 输出无大写 ASCII、无裸 %，两步对它幂等/严格可逆（不依赖 CharLowerBuffA 的
         DBCS 行为）；解码后即最终文本（对话管线随后的 0x01→% 还原不受影响）。
-    规则：ASCII A-Z→a-z；片假名行(前导 A5)尾字节 A2-BB→+0x20（原版 SJIS 规则
-          0x41-0x5A 的 GBK 精确等价：リンゴ→リンピ、ガード→ヌード、アックス→ヂッハベ）；
-          其余双字节尾字节 C1-DA→+0x20（T2）；[ ] 区逐字节原样（脚本安全）；
-          '%'→%25；孤立/非法字节原样转义保留。
+    规则（表驱动，逐字复刻原版行为）：
+      - ASCII A-Z → a-z（原版单字节规则）；
+      - 双字节对命中映射表（table_va，见 _build_gravity_map）→ 换成表中结果对；
+      - 其余双字节 / 孤立字节原样（SJIS 不存在 / 不受影响 / 不在 GBK 的一律不变）；
+      - [ ] 区逐字节原样（脚本安全）；'%'→%25。
     一次扫描 + 3×len 预分配 + 收尾 SetLength 收缩（免二次计数扫描）。
-    位置无关：只用相对 call（E8）与字节立即数，无绝对地址引用。
+    位置无关：call/pop/delta 求表地址；只有相对 call（E8）与立即数，无绝对引用。
     """
     b = bytearray()
     labels = {}
@@ -1028,7 +1067,13 @@ def _build_gravity_stub(stub_va):
     op(0x89, 0x55, 0xFC)                         # mov [ebp-4],edx   ; &out
     op(0x89, 0x45, 0xF8)                         # mov [ebp-8],eax   ; src
     op(0xC6, 0x45, 0xF0, 0x00)                   # mov byte [ebp-0x10],0（bracket）
-    op(0x85, 0xC0)                               # test eax,eax（eax=src）
+    op(0xE8, 0x00, 0x00, 0x00, 0x00)             # call $+5
+    tbl_ret_va = stub_va + len(b)
+    op(0x58)                                     # pop eax
+    op(0x05); op(*struct.pack('<i', table_va - tbl_ret_va))   # add eax,Δ → 映射表地址
+    op(0x89, 0x45, 0xEC)                         # mov [ebp-0x14],eax（表基址）
+    op(0x8B, 0x45, 0xF8)                         # mov eax,[ebp-8]（取回 src）
+    op(0x85, 0xC0)                               # test eax,eax
     jcc(0x84, 'empty')                           # je .empty
 
     # --- len = strlen(src) ---
@@ -1100,20 +1145,24 @@ def _build_gravity_stub(stub_va):
     jcc(0x87, 'lone')                            # ja（0xFF）
     op(0x80, 0xFB, 0x7F)                         # cmp bl,0x7F
     jcc(0x84, 'lone')                            # je
-    op(0x3C, 0xA5)                               # cmp al,0xA5（片假名行）
-    jcc(0x84, 'kana')
-    op(0x80, 0xFB, 0xC1)                         # cmp bl,0xC1
-    jcc(0x82, 'pair_emit')                       # jb
-    op(0x80, 0xFB, 0xDA)                         # cmp bl,0xDA
-    jcc(0x87, 'pair_emit')                       # ja
-    op(0x80, 0xC3, 0x20)                         # add bl,0x20（T2）
+    # --- 查映射表：key = b1 | b2<<8（小端字）；命中则换成表内目标对 ---
+    op(0x88, 0xC2)                               # mov dl,al（b1 → key 低字节）
+    op(0x88, 0xDE)                               # mov dh,bl（b2 → key 高字节）
+    op(0x8B, 0x45, 0xEC)                         # mov eax,[ebp-0x14]（表基址）
+    L('lk')
+    op(0x66, 0x8B, 0x08)                         # mov cx,[eax]
+    op(0x66, 0x85, 0xC9)                         # test cx,cx
+    jcc(0x84, 'lk_done')                         # 终结（0000）→ 未命中
+    op(0x66, 0x39, 0xD1)                         # cmp cx,dx
+    jcc(0x84, 'lk_found')
+    op(0x83, 0xC0, 0x04)                         # add eax,4
+    jmp_l('lk')
+    L('lk_found')
+    op(0x8A, 0x58, 0x03)                         # mov bl,[eax+3]（目标尾字节）
+    op(0x8A, 0x40, 0x02)                         # mov al,[eax+2]（目标前导）
     jmp_l('pair_emit')
-    L('kana')                                    # 原版 SJIS 尾字节 0x41-0x5A 的 GBK 精确等价：
-    op(0x80, 0xFB, 0xA2)                         # cmp bl,0xA2（0x41+0x61）
-    jcc(0x82, 'pair_emit')                       # jb
-    op(0x80, 0xFB, 0xBB)                         # cmp bl,0xBB（0x5A+0x61）
-    jcc(0x87, 'pair_emit')                       # ja
-    op(0x80, 0xC3, 0x20)                         # add bl,0x20（ゴ→ピ、ガ→ヌ、ア→ヂ…）
+    L('lk_done')
+    op(0x88, 0xD0)                               # mov al,dl（未命中 → 恢复源前导 b1）
     L('pair_emit')
     call_l('emit_esc')                           # 前导
     op(0x88, 0xD8)                               # mov al,bl
@@ -1520,10 +1569,17 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 5] = b'\xE8' + struct.pack(
         '<i', cave_va + TYPING_GATE_STUB_OFF - (TYPING_GATE_HOOK_VA + 5))
 
-    # 重力语变换：对话（0x418D21）与菜单窗口（0x46FC03）两处 call 0x417048 → GBK 变换桩；
+    # 重力语变换：对话（0x418D21）与菜单窗口（0x46FC03）两处 call 0x417048 → 表驱动变换桩；
     # 百度搜索的 URL 编码调用点（0x476548）保持原样不动
-    stubV = _build_gravity_stub(cave_va + GRAVITY_STUB_OFF)
+    stubV = _build_gravity_stub(cave_va + GRAVITY_STUB_OFF, cave_va + GRAVITY_TABLE_OFF)
+    if GRAVITY_STUB_OFF + len(stubV) > GRAVITY_TABLE_OFF:
+        raise RuntimeError('重力语变换补丁：桩越过了映射表区')
     data[raw + GRAVITY_STUB_OFF:raw + GRAVITY_STUB_OFF + len(stubV)] = stubV
+    mapV, mapN = _build_gravity_map()
+    if GRAVITY_TABLE_OFF + len(mapV) > IME_CAVE_SIZE:
+        raise RuntimeError('重力语变换补丁：映射表越出 cave')
+    data[raw + GRAVITY_TABLE_OFF:raw + GRAVITY_TABLE_OFF + len(mapV)] = mapV
+    print(f'  重力语逐字映射表: {mapN} 条 / {len(mapV)} 字节 @cave+0x{GRAVITY_TABLE_OFF:X}')
     for site_va, site_label in ((GRAVITY_HOOK_DLG_VA, '对话'), (GRAVITY_HOOK_WIN_VA, '窗口')):
         off = site_va - 0x400C00
         expect = b'\xE8' + struct.pack('<i', GRAVITY_ESCAPE_VA - (site_va + 5))
