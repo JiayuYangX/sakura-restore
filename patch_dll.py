@@ -57,7 +57,8 @@ first.dll：
       .cave 包装桩（拖动模态循环期间线程 GDISCALED）。
     - 输入法修复（.cave IME 段，随 load 安装/unload 还原）：候选框"感知修正"根治
       （截答 textinputframework 的窗口感知查询，新旧版微软拼音一致）+ 组字窗字体
-      替换 + 摆位补偿；详见《窗口分析及修复.md》§9。
+      替换 + 摆位补偿；**unaware 宿主（原版 MATERIA）安装时自动整体 no-op**；
+      详见《窗口分析及修复.md》§9。
 
   状态栏重影修复（原版缺陷）：TStatusBar 的窗口类缺 CS_HREDRAW，拖动改变 Todo/Notify
     宽度时系统不做整窗失效、旧像素残留（文字重影）。在 TWinControl.CreateWnd 调用虚拟
@@ -2756,6 +2757,8 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #   修法：钩 user32!GetWindowDpiAwarenessContext；命中 textinputframework 两处调用点时
 #   回答 PMv2（物理感知）→ 补偿不再发生；锚点源头保持原值（不再需要任何 ÷f）。
 #   旧版引擎不经这段管线，因此同一修法对两版引擎都正确，无需分流判别。
+#   宿主判别：安装时 GetProcessDpiAwareness(当前进程)==UNAWARE(0)（原版 MATERIA 等）
+#   → 整层 no-op（不装任何钩；unaware 宿主的 IME 由系统原生正确处理）。
 # 其余三件套（同一装配：载入安装/卸载还原，全部 .cave 内，位置无关）：
 #   1) user32!ClientToScreen 入口钩：返回地址 ∈ msctf+{0xE55D1,0xE55DD,0xEB083} →
 #      门控（焦点窗口 GetDpiForWindow==96）+ 记录 EB083 原始输出为原点 O + 动态因子刷新。
@@ -2767,7 +2770,7 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #   装配：load 导出 EAT 重定向到"载入包装"（call 安装例程后转原包装）；unload 同理先还原再转；
 #   目标函数经 GetModuleHandleA/GetProcAddress 于安装时解析（IAT 槽 0x4B31E4/0x4B31E0）。
 # cave 布局（0x2810 起）：数据 0x2810-0x28FF | CTS 桩 0x2A00 | SEL 桩 0x2C00 | CS 桩 0x3000 |
-#   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3620 | hook1 0x36E0 | unhook1 0x3760 |
+#   跳板 0x3200/0x320C/0x3250 | 安装 0x3300 | 还原 0x3640 | hook1 0x36E0 | unhook1 0x3760 |
 #   载入/卸载包装 0x3800/0x3840 | 字符串 0x3900（cave 节 0x2800→0x6000；
 #   0x3B00 打字屏蔽桩、0x4000 重力语变换桩、0x5860 感知修正层为后续新增）
 
@@ -2778,6 +2781,7 @@ IME_PTR_FOCUS = 0x0C
 IME_PTR_GDPI = 0x10
 IME_PTR_GOBJ = 0x14
 IME_PTR_CFIW = 0x18
+IME_PTR_GPDA = 0x1C    # shcore!GetProcessDpiAwareness（宿主判别用）
 IME_PTR_STDA = 0xFC    # user32!SetThreadDpiAwarenessContext
 IME_PTR_MFP = 0x08     # user32!MonitorFromPoint
 IME_PTR_GPFM = 0x3C   # shcore!GetDpiForMonitor
@@ -2810,6 +2814,8 @@ IME_CACHEF = 0xCC      # 缓存创建时的因子（变化则失效重建）
 IME_VPOLD = 0xF0
 IME_T5_CTS = 0xF4
 IME_T5_SEL = 0xF8
+IME_HOSTOFF = 0x120    # u8：1=unaware 宿主（如 MATERIA）→ IME 层整体 no-op
+IME_HOSTVAL = 0x124    # u32：GetProcessDpiAwareness 输出暂存
 
 IME_STUB_CTS = 0x2A00
 IME_STUB_SEL = 0x2C00
@@ -2818,8 +2824,8 @@ IME_TR_CTS = 0x3200     # 12B（8B FF 55 8B EC / FF B3 disp / C3）
 IME_TR_SEL = 0x320C
 IME_TR_CS = 0x3250      # 运行时填充（原 6B + E9 回）
 IME_INSTALL = 0x3300
-IME_RESTORE = 0x3620    # （原 0x3600：探针加长后安装例程 769B 越界 1B 覆盖其 ret，
-                        #   表现为"load 后立即被还原"；槽位现留 0x20 余量 + 构建断言）
+IME_RESTORE = 0x3640    # （原 0x3600→0x3620→0x3640：随功能加长，槽位留余量 + 构建断言；
+                        #   0x3600 时代曾因越界 1B 覆盖 ret 出过"load 后立即被还原"事故）
 IME_WRAP_LOAD = 0x3800
 IME_WRAP_UNLOAD = 0x3840
 IME_STR = 0x3900
@@ -2868,7 +2874,7 @@ IME_STR_BLOB = (b'user32.dll\x00' b'gdi32.dll\x00' b'msctf.dll\x00'
                 b'GetFocus\x00' b'GetDpiForWindow\x00'
                 b'SetThreadDpiAwarenessContext\x00' b'MonitorFromPoint\x00' b'GetDpiForMonitor\x00'
                 b'shcore.dll\x00' b'LoadLibraryA\x00' b'GetObjectW\x00' b'CreateFontIndirectW\x00'
-                b'VirtualProtect\x00')
+                b'VirtualProtect\x00' b'GetProcessDpiAwareness\x00')
 
 def _ime_str_off(name):
     return IME_STR_BLOB.index(name + b'\x00')
@@ -2890,6 +2896,7 @@ IME_S_LL = _ime_str_off(b'LoadLibraryA')
 IME_S_GOBJ = _ime_str_off(b'GetObjectW')
 IME_S_CFIW = _ime_str_off(b'CreateFontIndirectW')
 IME_S_VPROT = _ime_str_off(b'VirtualProtect')
+IME_S_GPDA = _ime_str_off(b'GetProcessDpiAwareness')
 
 MSCTF_CTS_SITES = (0xE55D1, 0xE55DD, 0xEB083)
 MSCTF_SEL_SITES = (0xE40ED, 0xE413C, 0xE3EEA, 0xE3F0F)
@@ -3033,6 +3040,10 @@ def _awrfix_install_build(ta_va, data_va, cv):
 
     o.raw(b'\x60')
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x80\xBB'); o.d32(d(IME_HOSTOFF)); o.raw(b'\x00')
+    o.j8(0x74, 'go')                            # unaware 宿主（如 MATERIA）→ 不装
+    o.raw(b'\x61\xC3')
+    o.mark('go')
     o.raw(b'\x8B\x83'); o.d32(d(AWRFIX_PTR))
     o.raw(b'\x85\xC0')
     o.jc32(0x85, 'resolved')
@@ -3457,9 +3468,26 @@ def _ime_install_build(ta_va, data_va):
     o.raw(b'\x50\x56')
     o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
     o.raw(b'\x89\x83'); o.d32(d(IME_PTR_GPFM))
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + IME_S_GPDA)
+    o.raw(b'\x50\x56')
+    o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
+    o.raw(b'\x89\x83'); o.d32(d(IME_PTR_GPDA))
     o.mark('no_shcore')
     o.mark('no_k32')
     o.mark('resolved')
+    # —— 宿主判别：进程感知 == UNAWARE(0) → 原生场景（MATERIA 等）→ IME 层整体 no-op ——
+    o.raw(b'\x8B\x83'); o.d32(d(IME_PTR_GPDA))
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'hostaware')                     # 解析失败 → 当作 aware
+    o.raw(b'\x8D\x93'); o.d32(d(IME_HOSTVAL))
+    o.raw(b'\x52\x6A\xFF')                      # push &val; push -1（当前进程）
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_GPDA))
+    o.raw(b'\x8B\x83'); o.d32(d(IME_HOSTVAL))
+    o.raw(b'\x85\xC0')
+    o.j8(0x75, 'hostaware')                     # !=0 → aware → 正常装钩
+    o.raw(b'\xC6\x83'); o.d32(d(IME_HOSTOFF)); o.raw(b'\x01')   # 标记 unaware 宿主
+    o.j32('done')                               # 跳过全部装钩（含因子刷新与感知修正）
+    o.mark('hostaware')
     o.raw(b'\xC7\x83'); o.d32(d(IME_FNUM)); o.raw(b'\x60\x00\x00\x00')
     o.raw(b'\xC7\x83'); o.d32(d(IME_FDEN)); o.raw(b'\x60\x00\x00\x00')
     _ime_factor_refresh(o, data_va)
@@ -3492,6 +3520,7 @@ def _ime_install_build(ta_va, data_va):
     emit_hook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_STUB_CTS, IME_ORIG_CTS, IME_T5_CTS, False)
     emit_hook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_STUB_SEL, IME_ORIG_SEL, IME_T5_SEL, False)
     emit_hook(2, IME_FLAGS + 2, 0, IME_STUB_CS, IME_ORIG_CS, 0, True)
+    o.mark('done')
     o.raw(b'\x61\xC3')
     return o.finish()
 
