@@ -2882,6 +2882,9 @@ PROBE2_CARET_TGT = 0x16C # F 钩：原函数地址槽（msctf_base+0x5496E）
 PROBE2_CARET_RET = 0x170 # F 钩：原 call 的下一条地址槽（msctf_base+0x54961）
 PROBE2_CARET_OBJ = 0x174 # F 钩：位置对象指针暂存槽
 PROBE2_CARET_PRC = 0x178 # F 钩：prc 指针暂存槽
+PROBE2_ORIGA = 0x18C      # A/B/D 站点原 6 字节暂存（安装时保存的运行时重定位值）
+PROBE2_ORIGB = 0x192
+PROBE2_ORIGD = 0x198
 PROBE2_CAPTURE = 0x17C    # F 钩：obj_rect[0..3] 捕获槽（调用前捕获，防止被原函数清空）
 PROBE2_STUB_A = 0x5DC0   # msctf 0x9B004 桩
 PROBE2_STUB_B = 0x5E80   # msctf 0x47749 桩
@@ -3728,10 +3731,10 @@ def _probe2_install_build(ta_va, data_va, cv):
     o.raw(b'\x50')
     o.raw(b'\xFF\x93'); o.d32(GMH_IAT)
     o.raw(b'\x89\x83'); o.d32(d(PROBE2_TIB))
-    for i, (site_rva, stub_off, flag_off) in enumerate((
-            (PROBE2_SITE_A, PROBE2_STUB_A, IME_FLAGS + 3),
-            (PROBE2_SITE_B, PROBE2_STUB_B, PROBE2_FLAGB),
-            (0x30731, PROBE2_STUB_D, PROBE2_FLAGD))):
+    for i, (site_rva, stub_off, flag_off, orig_off) in enumerate((
+            (PROBE2_SITE_A, PROBE2_STUB_A, IME_FLAGS + 3, PROBE2_ORIGA),
+            (PROBE2_SITE_B, PROBE2_STUB_B, PROBE2_FLAGB, PROBE2_ORIGB),
+            (0x30731, PROBE2_STUB_D, PROBE2_FLAGD, PROBE2_ORIGD))):
         mk = 'p2s%d' % i
         o.raw(b'\x8B\xB3'); o.d32(d(IME_MSCTF_BASE))
         o.raw(b'\x85\xF6')
@@ -3741,6 +3744,9 @@ def _probe2_install_build(ta_va, data_va, cv):
         o.jc32(0x85, mk)                        #   运行时 IAT 操作数已随 msctf 重定位）
         o.raw(b'\x80\x7E\x01\x15')              # cmp byte [esi+1],0x15
         o.jc32(0x85, mk)
+        # 保存原 6 字节（运行时重定位值——还原必须写回它，不能写文件里的首选基址字节）
+        o.raw(b'\x8B\x06\x89\x83'); o.d32(d(orig_off))
+        o.raw(b'\x66\x8B\x46\x04\x66\x89\x83'); o.d32(d(orig_off) + 4)
         o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
         o.raw(b'\x6A\x40\x6A\x06\x56')
         o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
@@ -3828,10 +3834,10 @@ def _probe2_restore_build(ta_va, data_va, cv):
 
     o.raw(b'\x53')                                  # push ebx
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')              # call$+5; pop ebx
-    for i, (site_rva, flag_off) in enumerate((
-            (PROBE2_SITE_A, IME_FLAGS + 3),
-            (PROBE2_SITE_B, PROBE2_FLAGB),
-            (0x30731, PROBE2_FLAGD))):
+    for i, (site_rva, flag_off, orig_off) in enumerate((
+            (PROBE2_SITE_A, IME_FLAGS + 3, PROBE2_ORIGA),
+            (PROBE2_SITE_B, PROBE2_FLAGB, PROBE2_ORIGB),
+            (0x30731, PROBE2_FLAGD, PROBE2_ORIGD))):
         mk = 'p2r%d' % i
         o.raw(b'\x80\xBB'); o.d32(d(flag_off)); o.raw(b'\x00')
         o.j8(0x74, mk)
@@ -3844,8 +3850,8 @@ def _probe2_restore_build(ta_va, data_va, cv):
         o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
         o.raw(b'\x6A\x40\x6A\x06\x56')
         o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
-        o.raw(b'\xC7\x06'); o.raw(struct.pack('<I', 0x501815FF))
-        o.raw(b'\x66\xC7\x46\x04\x10\x10')
+        o.raw(b'\x8B\x83'); o.d32(d(orig_off)); o.raw(b'\x89\x06')
+        o.raw(b'\x66\x8B\x83'); o.d32(d(orig_off) + 4); o.raw(b'\x66\x89\x46\x04')
         o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
         o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))
         o.raw(b'\x6A\x06\x56')
