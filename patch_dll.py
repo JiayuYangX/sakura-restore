@@ -109,6 +109,8 @@ PATCHES = [
 
 
 IME_ENABLE = True
+IME_CS_COMP_ENABLE = False  # F3：改在站点 B 上游放大（ClientToScreen 现算原点、拖动自动跟随）
+                            # 组字态由"回写回路"自动带正；空态另行处理
 
 
 def apply_patches(data: bytes) -> bytes:
@@ -2862,6 +2864,26 @@ IME_HOOK1 = 0x36E0
 IME_UNHOOK1 = 0x3760
 IME_LOAD_WRAP_ORIG = 0x1F7C
 IME_UNLOAD_STUB_ORIG = 0x2400
+# ---- PROBE2：站点自呼探针（2026-10-01：测空态/组字窗的 ÷f 落在哪一步）----
+PROBE2_ENABLE = True
+PROBE2_SEQ = 0x128       # u32 环形序号
+PROBE2_FLAGB = 0x121     # B 站点装钩标志（A 用 IME_FLAGS+3）
+PROBE2_FLAGC = 0x122     # C 站点装钩标志
+PROBE2_FLAGD = 0x123     # D 站点（0x30731）装钩标志
+PROBE2_STUB_D = 0x3A40   # msctf 0x30731 桩
+PROBE2_TIB = 0x148       # textinputframework 基址
+PROBE2_T5 = 0x14C        # C 钩 T5 槽（site+5）
+PROBE2_ORIGC = 0x150     # C 钩原序言暂存（8B）
+PROBE2_STUB_A = 0x5DC0   # msctf 0x9B004 桩
+PROBE2_STUB_B = 0x5E80   # msctf 0x47749 桩
+PROBE2_STUB_C = 0x3D00   # tif 0xB73D0 入口桩
+PROBE2_TR_C = 0x3FC0     # C 的 T5 跳板（12B）
+PROBE2_INSTALL = 0x3E00  # PROBE2 安装例程（独立槽位）
+PROBE2_RESTORE = 0x4640  # PROBE2 还原例程（独立槽位）
+PROBE2_RING = 0x41C0     # 48 × 24B（0x41C0-0x4640）
+PROBE2_SITE_A = 0x9B004  # msctf RVA（原 6B：FF 15 18 50 10 10）
+PROBE2_SITE_B = 0x47749  # msctf RVA（同上）
+PROBE2_SITE_C = 0xB73D0  # textinputframework RVA（原 5B：8B FF 55 8B EC）
 # ---- 后半 ----
 
 
@@ -3336,6 +3358,292 @@ def _ime_cs_stub(stub_va, data_va, tr_va):
     return o.finish()
 
 
+def _probe2_obj_record(o, data_va, cv):
+    """B 站专用（id=14）：{placement输入结构, 位置对象, 其vtable, 0}——找"相对坐标值"源头的钥匙。
+    链路：&pt → *(&pt-0x54)=输入结构 → [结构+4]=位置对象（其+0x80/+0x84=相对坐标）。
+    自带 pushad/popad 帧（不占用外层 esi/ebp）；&pt 在外层帧 +0x18 → 本帧 +0x38。"""
+    o.raw(b'\x60')                              # pushad
+    o.raw(b'\x8B\x4C\x24\x38')                  # ecx=[esp+0x38] = &pt
+    o.raw(b'\x8B\x49\xAC')                      # ecx=[ecx-0x54]（placement 输入结构）
+    o.raw(b'\x85\xC9')
+    o.j8(0x74, 'p2o')
+    o.raw(b'\x8B\x51\x04')                      # edx=[ecx+4]（位置对象）
+    o.raw(b'\x85\xD2')
+    o.j8(0x74, 'p2o')
+    o.raw(b'\x8B\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x8B\xF8')                          # edi=seq
+    o.raw(b'\x83\xE7\x2F')
+    o.raw(b'\x6B\xFF\x18')
+    o.raw(b'\x8D\xB3'); o.d32(cv + PROBE2_RING) # esi=环基址（lea！）
+    o.raw(b'\x03\xFE')                          # edi=槽
+    o.raw(b'\x89\x07')
+    o.raw(b'\xC7\x47\x04\x0E\x00\x00\x00')      # id=14
+    o.raw(b'\x89\x4F\x08')                      # v1=输入结构
+    o.raw(b'\x89\x57\x0C')                      # v2=位置对象
+    o.raw(b'\x8B\x02\x89\x47\x10')              # v3=其 vtable
+    o.raw(b'\xC7\x47\x14\x00\x00\x00\x00')
+    o.raw(b'\xFF\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.mark('p2o')
+    o.raw(b'\x61')                              # popad
+
+
+
+def _probe2_site_stub(stub_va, data_va, cv, site_rva, rid, want_obj=False, want_scale=False):
+    """PROBE2 站点桩（msctf 的 ClientToScreen 调用点，自呼式·紧凑版）：
+    进入时栈顶=[hwnd][&pt]；先写环{seq,id,bx,by}→手动执行 ClientToScreen→
+    补写{ax,ay}+seq++→跳回 site+6。寄存器全保（mini-frame）。
+    注意：5 个 push 在 call$+5 之前 → pop 得 stub+0xA，故 _IB 基址 = stub+0xA。"""
+    o = _IB(stub_va + 0x0A)
+    o.raw(b'\x53\x57\x52\x51\x50')              # push ebx/edi/edx/ecx/eax
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')          # call$+5; pop ebx
+    # 懒安装（幂等；textinputframework 起来后补装求界入口钩）
+    o.raw(b'\x60')
+    o.raw(b'\x8D\x83'); o.d32(cv + PROBE2_INSTALL)
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x61')
+    # 记录#1：seq/id/bx/by（edi=环槽）
+    o.raw(b'\x8B\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x8B\xC8')
+    o.raw(b'\x83\xE1\x2F')
+    o.raw(b'\x6B\xC9\x18')
+    o.raw(b'\x8D\xBB'); o.d32(cv + PROBE2_RING)
+    o.raw(b'\x03\xF9')
+    o.raw(b'\x89\x07')
+    o.raw(b'\xC7\x47\x04'); o.raw(struct.pack('<i', rid))
+    o.raw(b'\x8B\x4C\x24\x18')                  # ecx=&pt
+    o.raw(b'\x8B\x11\x89\x57\x08')              # [edi+8]=pt.x（before）
+    o.raw(b'\x8B\x51\x04\x89\x57\x0C')          # [edi+0xC]=pt.y（before）
+    if want_scale:
+        # 锚点 ×f（gated：焦点窗 GDISCALED/96；x' = (x·FNUM + FDEN/2)/FDEN）
+        o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
+        o.raw(b'\x85\xC0')
+        o.j8(0x74, 'p2ns')
+        o.raw(b'\x50')
+        o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
+        o.raw(b'\x83\xF8\x60')
+        o.j8(0x75, 'p2ns')
+        o.raw(b'\x8B\x4C\x24\x18')              # ecx=&pt
+        for pt_off in (b'\x00', b'\x04'):
+            o.raw(b'\x8B\x41' + pt_off)         # eax=pt[k]
+            o.raw(b'\x0F\xAF\x83'); o.d32(data_va + IME_FNUM)
+            o.raw(b'\x8B\x8B'); o.d32(data_va + IME_FDEN)   # ecx=FDEN（除数放 ecx，不能放 edx）
+            o.raw(b'\x8B\xD1\xD1\xFA\x03\xC2')              # edx=ecx; sar edx,1; add eax,edx（四舍五入）
+            o.raw(b'\x99\xF7\xF9')                          # cdq; idiv ecx  ← 必须 cdq，否则 EDX=FDEN 当下半被除数 → #DE
+            o.raw(b'\x8B\x4C\x24\x18')                      # ecx=&pt（除法后用 ecx 重载）
+            o.raw(b'\x89\x41' + pt_off)         # pt[k]=eax
+        o.mark('p2ns')
+    # 手动调用 ClientToScreen(hwnd,&pt)：msctf IAT 槽 +0x105018
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_MSCTF_BASE)
+    o.raw(b'\x81\xC1'); o.raw(struct.pack('<I', 0x105018))
+    o.raw(b'\xFF\x74\x24\x18')                  # push &pt
+    o.raw(b'\xFF\x74\x24\x18')                  # push hwnd（首个 push 后偏移恰指 hwnd）
+    o.raw(b'\xFF\x11')                          # call [ecx]
+    # 记录#2：补写 ax/ay + seq++（edi 跨调用由约定保留）
+    o.raw(b'\x8B\x4C\x24\x18')                  # ecx=&pt
+    o.raw(b'\x8B\x11\x89\x57\x10')              # [edi+0x10]=pt.x（after）
+    o.raw(b'\x8B\x51\x04\x89\x57\x14')          # [edi+0x14]=pt.y（after）
+    o.raw(b'\xFF\x83'); o.d32(data_va + PROBE2_SEQ)
+    if want_obj:
+        _probe2_obj_record(o, data_va, cv)
+    # 跳回 site+6（运行时算目标）
+    o.raw(b'\x8B\x93'); o.d32(data_va + IME_MSCTF_BASE)
+    o.raw(b'\x81\xC2'); o.raw(struct.pack('<I', site_rva + 6))
+    o.raw(b'\x58\x59\x83\xC4\x04\x5F\x5B\x83\xC4\x08\xFF\xE2')
+    return o.finish()
+
+
+def _probe2_bounds_stub(stub_va, data_va, cv, tr_va):
+    """PROBE2：textinputframework 0xB73D0（求界方法）入口——整函数替换式（同 CTS 桩）。
+    记 4 个入口参数；重推 5 参（每次同偏移取下一参数）→ call TR → 存 eax → popad → ret 0x14。"""
+    o = _IB(stub_va + 6)
+    o.raw(b'\x60')
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')
+    o.raw(b'\x8B\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x8B\xC8')
+    o.raw(b'\x83\xE1\x2F')
+    o.raw(b'\x6B\xC9\x18')
+    o.raw(b'\x8D\xBB'); o.d32(cv + PROBE2_RING)
+    o.raw(b'\x03\xF9')
+    o.raw(b'\x89\x07')
+    o.raw(b'\xC7\x47\x04\x0A\x00\x00\x00')      # id=10
+    o.raw(b'\x8B\x44\x24\x24\x89\x47\x08')      # out1
+    o.raw(b'\x8B\x44\x24\x28\x89\x47\x0C')      # hwnd
+    o.raw(b'\x8B\x44\x24\x2C\x89\x47\x10')      # range
+    o.raw(b'\x8B\x44\x24\x30\x89\x47\x14')      # &rect
+    o.raw(b'\xFF\x83'); o.d32(data_va + PROBE2_SEQ)
+    # id=11：委托链 {deleg_obj, vtbl, [vtbl+0x60]=真实求界函数}（"范围→屏幕"实现地址）
+    o.raw(b'\x8B\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x8B\xC8')
+    o.raw(b'\x83\xE1\x2F')
+    o.raw(b'\x6B\xC9\x18')
+    o.raw(b'\x8D\xBB'); o.d32(cv + PROBE2_RING)
+    o.raw(b'\x03\xF9')
+    o.raw(b'\x89\x07')
+    o.raw(b'\xC7\x47\x04\x0B\x00\x00\x00')      # id=11
+    o.raw(b'\x8B\x44\x24\x24')                  # out1
+    o.raw(b'\x8B\x40\x0C')                      # [out1+0xC]
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'p2sk11')
+    o.raw(b'\x8B\x80\x88\x00\x00\x00')          # [eax+0x88] = 委托对象
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'p2sk11')
+    o.raw(b'\x89\x47\x08')                      # v1 = 委托对象
+    o.raw(b'\x8B\x08')                          # ecx = vtable
+    o.raw(b'\x89\x4F\x0C')                      # v2 = vtable
+    o.raw(b'\x8B\x51\x60')                      # edx = [vtbl+0x60]
+    o.raw(b'\x89\x57\x10')                      # v3 = 真实求界函数
+    o.raw(b'\xC7\x47\x14\x00\x00\x00\x00')
+    o.raw(b'\xFF\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.mark('p2sk11')
+    o.raw(b'\xFF\x74\x24\x34')                  # 重推 5 参（&flag→&rect→range→hwnd→out1）
+    o.raw(b'\xFF\x74\x24\x34')
+    o.raw(b'\xFF\x74\x24\x34')
+    o.raw(b'\xFF\x74\x24\x34')
+    o.raw(b'\xFF\x74\x24\x34')
+    o.raw(b'\x8D\x83'); o.d32(tr_va)            # call TR（原序言 + 跳入原体）
+    o.raw(b'\xFF\xD0')
+    o.raw(b'\x89\x44\x24\x1C')                  # 存返回值到 pushad 的 EAX 槽
+    # id=12：出口矩形 {left,top,right,bottom}（=&rect 处）
+    o.raw(b'\x8B\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x8B\xC8')
+    o.raw(b'\x83\xE1\x2F')
+    o.raw(b'\x6B\xC9\x18')
+    o.raw(b'\x8D\xBB'); o.d32(cv + PROBE2_RING)
+    o.raw(b'\x03\xF9')
+    o.raw(b'\x89\x07')
+    o.raw(b'\xC7\x47\x04\x0C\x00\x00\x00')      # id=12
+    o.raw(b'\x8B\x4C\x24\x30')                  # ecx = &rect
+    o.raw(b'\x8B\x01\x89\x47\x08')              # left
+    o.raw(b'\x8B\x41\x04\x89\x47\x0C')          # top
+    o.raw(b'\x8B\x41\x08\x89\x47\x10')          # right
+    o.raw(b'\x8B\x41\x0C\x89\x47\x14')          # bottom
+    o.raw(b'\xFF\x83'); o.d32(data_va + PROBE2_SEQ)
+    o.raw(b'\x61')
+    o.raw(b'\xC2\x14\x00')                      # popad; ret 0x14（5 参数）
+    return o.finish()
+
+
+def _probe2_install_build(ta_va, data_va, cv):
+    """PROBE2 安装例程（独立槽位）：解析 msctf/tif 基址；挂 msctf 两站点（自呼桩）
+    + tif 求界入口（T5 式，复用共享 hook1——调用前把 ebx 调回 IME_INSTALL 锚）。"""
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x53')                                  # push ebx
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')              # call$+5; pop ebx
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR + IME_S_MSCTF)
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(GMH_IAT)
+    o.raw(b'\x89\x83'); o.d32(d(IME_MSCTF_BASE))
+    o.raw(b'\x8D\x83'); o.d32(cv + AWRFIX_STR_TIB)
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(GMH_IAT)
+    o.raw(b'\x89\x83'); o.d32(d(PROBE2_TIB))
+    for i, (site_rva, stub_off, flag_off) in enumerate((
+            (PROBE2_SITE_A, PROBE2_STUB_A, IME_FLAGS + 3),
+            (PROBE2_SITE_B, PROBE2_STUB_B, PROBE2_FLAGB),
+            (0x30731, PROBE2_STUB_D, PROBE2_FLAGD))):
+        mk = 'p2s%d' % i
+        o.raw(b'\x8B\xB3'); o.d32(d(IME_MSCTF_BASE))
+        o.raw(b'\x85\xF6')
+        o.j8(0x74, mk)
+        o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', site_rva))
+        o.raw(b'\x80\x3E\xFF')                  # cmp byte [esi],0xFF（只校验操作码：
+        o.jc32(0x85, mk)                        #   运行时 IAT 操作数已随 msctf 重定位）
+        o.raw(b'\x80\x7E\x01\x15')              # cmp byte [esi+1],0x15
+        o.jc32(0x85, mk)
+        o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+        o.raw(b'\x6A\x40\x6A\x06\x56')
+        o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+        o.raw(b'\x8D\x83'); o.d32(cv + stub_off)
+        o.raw(b'\x2B\xC6\x83\xE8\x05')
+        o.raw(b'\xC6\x06\xE9\x89\x46\x01')
+        o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+        o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))
+        o.raw(b'\x6A\x06\x56')
+        o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+        o.raw(b'\xC6\x83'); o.d32(d(flag_off)); o.raw(b'\x01')
+        o.mark(mk)
+    o.raw(b'\x8B\x83'); o.d32(d(PROBE2_TIB))
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'p2c')
+    o.raw(b'\x8B\xF0')
+    o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', PROBE2_SITE_C))
+    o.raw(b'\x81\x3E'); o.raw(struct.pack('<I', 0x8B55FF8B))
+    o.jc32(0x85, 'p2c')
+    o.raw(b'\x80\x7E\x04\xEC')
+    o.jc32(0x85, 'p2c')
+    o.raw(b'\x8D\xBB'); o.d32(cv + PROBE2_STUB_C)
+    o.raw(b'\x8D\x93'); o.d32(d(PROBE2_ORIGC))
+    o.raw(b'\x8D\x8B'); o.d32(d(PROBE2_T5))
+    o.raw(b'\x8D\xAB'); o.d32(d(PROBE2_FLAGC))
+    o.raw(b'\x53')                                  # push ebx
+    o.raw(b'\x81\xC3'); o.raw(struct.pack('<i', IME_INSTALL - PROBE2_INSTALL))
+    o.call_va(cv + IME_HOOK1)                       # hook1（锚=IME_INSTALL）
+    o.raw(b'\x5B')                                  # pop ebx
+    o.mark('p2c')
+    o.raw(b'\x5B\xC3')                              # pop ebx; ret
+    return o.finish()
+
+
+def _probe2_restore_build(ta_va, data_va, cv):
+    """PROBE2 还原例程（独立槽位）：卸载时把两处 msctf 站点与 tif 入口写回原字节。"""
+    o = _IB(ta_va + 6)
+
+    def d(off):
+        return data_va + off
+
+    o.raw(b'\x53')                                  # push ebx
+    o.raw(b'\xE8\x00\x00\x00\x00\x5B')              # call$+5; pop ebx
+    for i, (site_rva, flag_off) in enumerate((
+            (PROBE2_SITE_A, IME_FLAGS + 3),
+            (PROBE2_SITE_B, PROBE2_FLAGB),
+            (0x30731, PROBE2_FLAGD))):
+        mk = 'p2r%d' % i
+        o.raw(b'\x80\xBB'); o.d32(d(flag_off)); o.raw(b'\x00')
+        o.j8(0x74, mk)
+        o.raw(b'\x8B\xB3'); o.d32(d(IME_MSCTF_BASE))
+        o.raw(b'\x85\xF6')
+        o.j8(0x74, mk)
+        o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', site_rva))
+        o.raw(b'\x80\x3E\xE9')
+        o.j8(0x75, mk)
+        o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+        o.raw(b'\x6A\x40\x6A\x06\x56')
+        o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+        o.raw(b'\xC7\x06'); o.raw(struct.pack('<I', 0x501815FF))
+        o.raw(b'\x66\xC7\x46\x04\x10\x10')
+        o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+        o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))
+        o.raw(b'\x6A\x06\x56')
+        o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+        o.raw(b'\xC6\x83'); o.d32(d(flag_off)); o.raw(b'\x00')
+        o.mark(mk)
+    o.raw(b'\x80\xBB'); o.d32(d(PROBE2_FLAGC)); o.raw(b'\x00')
+    o.j8(0x74, 'p2rc')
+    o.raw(b'\x8B\xB3'); o.d32(d(PROBE2_TIB))
+    o.raw(b'\x85\xF6')
+    o.j8(0x74, 'p2rc')
+    o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', PROBE2_SITE_C))
+    o.raw(b'\x80\x3E\xE9')
+    o.j8(0x75, 'p2rc')
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+    o.raw(b'\x6A\x40\x6A\x05\x56')
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\x8B\x83'); o.d32(d(PROBE2_ORIGC)); o.raw(b'\x89\x06')
+    o.raw(b'\x8B\x83'); o.d32(d(PROBE2_ORIGC) + 4); o.raw(b'\x89\x46\x04')
+    o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
+    o.raw(b'\xFF\xB3'); o.d32(d(IME_VPOLD))
+    o.raw(b'\x6A\x05\x56')
+    o.raw(b'\xFF\x93'); o.d32(d(IME_PTR_VPROT))
+    o.raw(b'\xC6\x83'); o.d32(d(PROBE2_FLAGC)); o.raw(b'\x00')
+    o.mark('p2rc')
+    o.raw(b'\x5B\xC3')                              # pop ebx; ret
+    return o.finish()
+
+
 def _ime_hook1(base_va, data_va):
     """共享装钩子（安装例程 call；ebx=安装例程锚点）。
     入：esi=目标VA、edi=桩VA、edx=原序言槽VA、ecx=T5槽VA(0=CS模式)、ebp=标志字节VA。"""
@@ -3519,7 +3827,10 @@ def _ime_install_build(ta_va, data_va):
 
     emit_hook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_STUB_CTS, IME_ORIG_CTS, IME_T5_CTS, False)
     emit_hook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_STUB_SEL, IME_ORIG_SEL, IME_T5_SEL, False)
-    emit_hook(2, IME_FLAGS + 2, 0, IME_STUB_CS, IME_ORIG_CS, 0, True)
+    if IME_CS_COMP_ENABLE:
+        emit_hook(2, IME_FLAGS + 2, 0, IME_STUB_CS, IME_ORIG_CS, 0, True)
+    if PROBE2_ENABLE:
+        o.call_va(cv + PROBE2_INSTALL)              # PROBE2 安装例程（独立槽位）
     o.mark('done')
     o.raw(b'\x61\xC3')
     return o.finish()
@@ -3557,7 +3868,10 @@ def _ime_restore_build(ta_va, data_va):
 
     emit_unhook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_ORIG_CTS, False)
     emit_unhook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_ORIG_SEL, False)
-    emit_unhook(2, IME_FLAGS + 2, 0, IME_ORIG_CS, True)
+    if IME_CS_COMP_ENABLE:
+        emit_unhook(2, IME_FLAGS + 2, 0, IME_ORIG_CS, True)
+    if PROBE2_ENABLE:
+        o.call_va(cv + PROBE2_RESTORE)              # PROBE2 还原例程（独立槽位）
     o.raw(b'\x61\xC3')
     return o.finish()
 
@@ -3620,6 +3934,27 @@ def build_ime_layer(data):
     put_ck(IME_STUB_CTS, IME_STUB_SEL, _ime_cts_stub(cave_va + IME_STUB_CTS, data_va, cave_va + IME_TR_CTS), 'CTS 桩')
     put_ck(IME_STUB_SEL, IME_STUB_CS, _ime_sel_stub(cave_va + IME_STUB_SEL, data_va, cave_va + IME_TR_SEL), 'SEL 桩')
     put_ck(IME_STUB_CS, IME_TR_CTS, _ime_cs_stub(cave_va + IME_STUB_CS, data_va, cave_va + IME_TR_CS), 'CS 桩')
+    if PROBE2_ENABLE:
+        if any(data[cave_raw + PROBE2_INSTALL: cave_raw + PROBE2_TR_C + 12]) or \
+           any(data[cave_raw + PROBE2_STUB_A: cave_raw + 0x6000]) or \
+           any(data[cave_raw + PROBE2_STUB_D: cave_raw + 0x3B00]) or \
+           any(data[cave_raw + PROBE2_STUB_C: cave_raw + 0x3E00]) or \
+           any(data[cave_raw + PROBE2_RESTORE: cave_raw + 0x4800]):
+            raise RuntimeError('IME：PROBE2 区非零，疑似布局冲突')
+        put_ck(PROBE2_INSTALL, PROBE2_TR_C,
+               _probe2_install_build(cave_va + PROBE2_INSTALL, data_va, cave_va), 'PROBE2 安装')
+        put_ck(PROBE2_STUB_A, PROBE2_STUB_B,
+               _probe2_site_stub(cave_va + PROBE2_STUB_A, data_va, cave_va, PROBE2_SITE_A, 6), 'PROBE2-A 桩')
+        put_ck(PROBE2_STUB_B, 0x6000,
+               _probe2_site_stub(cave_va + PROBE2_STUB_B, data_va, cave_va, PROBE2_SITE_B, 8, True, True), 'PROBE2-B 桩')
+        put_ck(PROBE2_STUB_D, 0x3B00,
+               _probe2_site_stub(cave_va + PROBE2_STUB_D, data_va, cave_va, 0x30731, 13), 'PROBE2-D 桩')
+        put_ck(PROBE2_STUB_C, 0x3E00,
+               _probe2_bounds_stub(cave_va + PROBE2_STUB_C, data_va, cave_va, cave_va + PROBE2_TR_C), 'PROBE2-C 桩')
+        put_ck(PROBE2_TR_C, PROBE2_TR_C + 12,
+               _ime_tr_body(cave_va, PROBE2_STUB_C, PROBE2_T5), 'PROBE2-C 跳板')
+        put_ck(PROBE2_RESTORE, 0x4800,
+               _probe2_restore_build(cave_va + PROBE2_RESTORE, data_va, cave_va), 'PROBE2 还原')
     put(IME_TR_CTS, _ime_tr_body(cave_va, IME_STUB_CTS, IME_T5_CTS))
     put(IME_TR_SEL, _ime_tr_body(cave_va, IME_STUB_SEL, IME_T5_SEL))
     put_ck(IME_HOOK1, IME_UNHOOK1, _ime_hook1(cave_va + IME_INSTALL + 6, data_va), 'hook1')
@@ -3627,7 +3962,7 @@ def build_ime_layer(data):
     put_ck(IME_INSTALL, IME_RESTORE, _ime_install_build(cave_va + IME_INSTALL, data_va), '安装例程')
     put_ck(IME_RESTORE, IME_HOOK1, _ime_restore_build(cave_va + IME_RESTORE, data_va), '还原例程')
     # 感知修正层（根治件）：独立子层，链入 load/unload
-    if any(data[cave_raw + AWRFIX_STUB: cave_raw + 0x5E00]):
+    if any(data[cave_raw + AWRFIX_STUB: cave_raw + 0x5DC0]):
         raise RuntimeError('IME：感知修正层区域非零，疑似布局冲突')
     put(AWRFIX_STR_AWARE, b'GetWindowDpiAwarenessContext\x00')
     put(AWRFIX_STR_TIB, b'textinputframework.dll\x00')
