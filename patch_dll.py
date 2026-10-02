@@ -2266,21 +2266,50 @@ MISAKI_SITE_B = 0x462333           # allclear 24bpp 行清零 call
 MISAKI_INFO_W = 148                # 信息窗宽度（行字节 592/444）
 MISAKI_CLOCK_W = 64                # 时钟宽度（行字节 256/192）
 
+# ---- 100% 边界刷新修复（misaki 侧）----
+#  系统在缩放比例跨过 100% 时会把分层表面（WS_EX_LAYERED 逐像素 alpha）的缩放
+#  状态重置错：向上穿越后窗内内容缩小且不再恢复。修复：
+#   1) 清零桩前奏把两个监控窗各自子类化到本模块新段里的桩（窗口未创建则重试）；
+#   2) 各桩在 WM_WINDOWPOSCHANGED 时采样本窗物理宽（线程尖峰 PMv2），仅当
+#      "上次 ≤ 本窗层宽 → 本次 > 本窗层宽"（向上穿越 100%）才对该窗：
+#      DWM cloak（消过渡黑帧）→ WS_EX_LAYERED 去/加往返（重建分层表面）；
+#   3) 该层下一次清空前由清零桩解除 cloak。
+#  安全网：卸载时由 first.dll 的 EXITFIX 清扫（按类名）把残留桩换回 DefWindowProcA。
+MISAKI_FWA_IAT = 0x4A05F8          # user32!FindWindowA
+MISAKI_GWLA_IAT = 0x4A055C         # user32!GetWindowLongA
+MISAKI_SWLA_IAT = 0x4A0470         # user32!SetWindowLongA
+MISAKI_SUB_WP1 = 0xC00             # 新段：时钟窗 WndProc 桩
+MISAKI_SUB_OLD1 = 0x400            # 旧 WndProc 槽
+MISAKI_STR1 = 0x420                # "Tanalogclockform\0"（17B）
+MISAKI_GR_IAT = 0x4A0554           # user32!GetWindowRect
+MISAKI_GMH_IAT = 0x4A02A0          # kernel32!GetModuleHandleA
+MISAKI_GPA_IAT = 0x4A029C          # kernel32!GetProcAddress
+MISAKI_SUB_LASTW = 0x410           # 时钟窗上次物理宽（穿越 100% 判定）
+MISAKI_SUB_STDA = 0x418            # SetThreadDpiAwarenessContext（懒解析）
+MISAKI_SUB_CTX2 = 0x4F8            # 尖峰前旧上下文暂存
+MISAKI_STR_USER32 = 0x450          # "user32.dll\0"
+MISAKI_STR_STDA = 0x460            # "SetThreadDpiAwarenessContext\0"
+MISAKI_SUB_BOOL = 0x4C8            # 样式暂存（4B）/ cloak BOOL 参数
+MISAKI_SUB_DWM_PTR = 0x4A8         # dwmapi!DwmSetWindowAttribute（懒解析）
+MISAKI_SUB_CLK1HWND = 0x4AC        # 时钟窗句柄（解除 cloak 用）
+MISAKI_SUB_CLK2HWND = 0x4B0        # 信息窗句柄
+MISAKI_SUB_CLK1FLAG = 0x4B4        # 时钟窗待解除 cloak（byte）
+MISAKI_SUB_CLK2FLAG = 0x4B5        # 信息窗待解除 cloak（byte）
+MISAKI_STR_DWMAPI = 0x480          # "dwmapi.dll\0"（11B）
+MISAKI_STR_DWMSWA = 0x490          # "DwmSetWindowAttribute\0"（22B）
+MISAKI_SUB_WP2 = 0x200             # 信息窗 WndProc 桩
+MISAKI_SUB_OLD2 = 0x404            # 旧 WndProc 槽（信息）
+MISAKI_SUB_LASTW2 = 0x414          # 信息窗上次物理宽
+MISAKI_STR2 = 0x440                # "Tcpuloadform\0"（13B）
+
 
 def _misaki_call(site_va, target_va):
     return b'\xE8' + struct.pack('<i', target_va - (site_va + 5))
 
 
-def _build_misaki_stub(cave_va):
-    """小桩：进入时 EAX=行指针, EDX=行字节数, EBX=图层id, EDI=行号, ESI=剩余行数。
-
-    不调用任何方法、不用绝对地址，直接用循环里现成的寄存器判断图层：
-      高度 = EDI + ESI；行字节数 = 宽度×4（32bpp 循环）或 宽度×3（24bpp 循环）。
-
-    - 信息窗（148 宽：592/444 行字节，128 或 64 高都算）：整层填 0x01；
-    - 时钟（64 宽：256/192 行字节）：整体填 0x01；
-    - 其余图层（倒计时等）：原样清零。
-    """
+def _build_misaki_stub(cave_va, ring_va):
+    """allclear 行清零小桩：保持基线填充逻辑；前奏一次性把时钟窗 WndProc 子类化到
+    本模块新段里的空桩（纯透传，本步不改变任何行为）。"""
     code = bytearray()
     fix = []
     lab = {}
@@ -2299,6 +2328,73 @@ def _build_misaki_stub(cave_va):
 
     def uj(label):
         fix.append((len(code), label)); emit(0xEB, 0)
+
+    emit(0x9C, 0x60)                        # pushfd; pushad
+    off_pic = len(code)
+    emit(0xE8, 0, 0, 0, 0)                  # call $+5
+    emit(0x5B)                              # pop ebx
+    emit(0x81, 0xEB); code.extend(struct.pack('<i', cave_va + off_pic + 5))  # ebx=增量
+    emit(0x83, 0xBB); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_OLD1)); emit(0x00)
+    cj(0x75, 'skip_sub')
+    emit(0x6A, 0x00)
+    emit(0x8D, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_STR1))
+    emit(0x50)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_FWA_IAT))
+    emit(0x85, 0xC0)
+    cj(0x74, 'skip_sub')                    # 窗口未创建 → 下次清零再试
+    emit(0x8B, 0xF8)
+    emit(0x6A, 0xFC, 0x57)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_GWLA_IAT))
+    emit(0x89, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_OLD1))
+    emit(0x8D, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_WP1))
+    emit(0x50, 0x6A, 0xFC, 0x57)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_SWLA_IAT))
+    lab['skip_sub'] = len(code)
+    emit(0x83, 0xBB); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_OLD2)); emit(0x00)
+    cj(0x75, 'skip_sub2')
+    emit(0x6A, 0x00)
+    emit(0x8D, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_STR2))
+    emit(0x50)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_FWA_IAT))
+    emit(0x85, 0xC0)
+    cj(0x74, 'skip_sub2')
+    emit(0x8B, 0xF8)
+    emit(0x6A, 0xFC, 0x57)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_GWLA_IAT))
+    emit(0x89, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_OLD2))
+    emit(0x8D, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_WP2))
+    emit(0x50, 0x6A, 0xFC, 0x57)
+    emit(0xFF, 0x93); code.extend(struct.pack('<i', MISAKI_SWLA_IAT))
+    lab['skip_sub2'] = len(code)
+    # —— cloak 解除：本层即将重绘时，若本窗有待解除标记 → DwmSetWindowAttribute ——
+    emit(0x8B, 0x44, 0x24, 0x10)            # mov eax,[esp+0x10]（pushad 里的 EBX=图层id）
+    cmp_eax(0x21FC)
+    cj(0x74, 'uclk')
+    cmp_eax(0x21FD)
+    cj(0x74, 'uinf')
+    uj('udone')
+    lab['uclk'] = len(code)
+    emit(0x80, 0xBB); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK1FLAG)); emit(0x00)
+    cj(0x74, 'udone')
+    emit(0xC6, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK1FLAG)); emit(0x00)
+    emit(0x8B, 0x93); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK1HWND))
+    uj('ucall')
+    lab['uinf'] = len(code)
+    emit(0x80, 0xBB); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK2FLAG)); emit(0x00)
+    cj(0x74, 'udone')
+    emit(0xC6, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK2FLAG)); emit(0x00)
+    emit(0x8B, 0x93); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_CLK2HWND))
+    lab['ucall'] = len(code)
+    emit(0x8B, 0x8B); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_DWM_PTR))
+    emit(0x85, 0xC9)
+    cj(0x74, 'udone')
+    emit(0xC7, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_BOOL)); emit(0x00, 0x00, 0x00, 0x00)
+    emit(0x6A, 0x04)
+    emit(0x8D, 0x83); code.extend(struct.pack('<i', ring_va + MISAKI_SUB_BOOL))
+    emit(0x50, 0x6A, 0x0D, 0x52)
+    emit(0xFF, 0xD1)                        # DwmSetWindowAttribute(hwnd,13,&0,4)
+    lab['udone'] = len(code)
+    emit(0x61, 0x9D)                        # popad; popfd
 
     emit(0x50)                  # push eax（保存行指针）
     emit(0x8D, 0x04, 0x3E)      # lea eax,[edi+esi] ; 高度
@@ -2333,6 +2429,139 @@ def _build_misaki_stub(cave_va):
     return bytes(code)
 
 
+def _misaki_wndproc(stub_va, old_slot_va, ring_va, thresh, cls_va, lastw_slot, hwnd_slot, flag_slot):
+    """单窗桩：0x47 时采样物理宽（线程尖峰 PMv2）；门控
+    "上次 ≤ thresh 且本次 > thresh"（向上穿越 100%）→ 刷新本窗。
+    保护 EBX/ESI/EDI，尾跳旧过程。"""
+    b = bytearray()
+    ji = []
+    marks = []
+
+    def raw(x):
+        b.extend(x)
+
+    def d32(va):
+        b.extend(struct.pack('<i', va - (stub_va + 8)))
+
+    def jmp8(op, t):
+        b.extend(bytes([op, 0])); ji.append((len(b) - 1, t, 1))
+
+    def jmp32(op, t):
+        b.extend(bytes([0x0F, op])); b.extend(b'\x00' * 4); ji.append((len(b) - 4, t, 4))
+
+    def jmpE(t):
+        b.extend(b'\xE9\x00\x00\x00\x00'); ji.append((len(b) - 4, t, 4))
+
+    raw(b'\x53\x56\x57')
+    raw(b'\xE8\x00\x00\x00\x00\x5B')
+    raw(b'\x8B\x74\x24\x10')                        # esi=hwnd
+    raw(b'\x83\x7C\x24\x14\x47')                    # cmp [esp+0x14],0x47
+    jmp32(0x85, 'tail')
+    # —— STDA 懒解析 + 尖峰 + 物理宽 ——
+    raw(b'\x8B\x83'); d32(ring_va + MISAKI_SUB_STDA)
+    raw(b'\x85\xC0')
+    jmp8(0x75, 'dospike')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_USER32)
+    raw(b'\x50')
+    raw(b'\xFF\x93'); d32(MISAKI_GMH_IAT)
+    raw(b'\x85\xC0')
+    jmp8(0x74, 'nospike')
+    raw(b'\x8B\xD0')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_STDA)
+    raw(b'\x50\x52')
+    raw(b'\xFF\x93'); d32(MISAKI_GPA_IAT)
+    raw(b'\x89\x83'); d32(ring_va + MISAKI_SUB_STDA)
+    raw(b'\x85\xC0')
+    jmp8(0x74, 'nospike')
+    marks.append(('dospike', len(b)))
+    raw(b'\x8B\x83'); d32(ring_va + MISAKI_SUB_STDA)
+    raw(b'\x6A\xFC'); raw(b'\xFF\xD0')
+    raw(b'\x89\x83'); d32(ring_va + MISAKI_SUB_CTX2)
+    marks.append(('nospike', len(b)))
+    raw(b'\x83\xEC\x10')
+    raw(b'\x8B\xD4')
+    raw(b'\x52\x56')
+    raw(b'\xFF\x93'); d32(MISAKI_GR_IAT)
+    raw(b'\x8B\x44\x24\x08')
+    raw(b'\x2B\x44\x24\x00')
+    raw(b'\x83\xC4\x10')
+    # —— 门控 ——
+    raw(b'\x8B\x8B'); d32(ring_va + lastw_slot)
+    raw(b'\x81\xF9'); raw(struct.pack('<I', thresh))
+    jmp32(0x87, 'keep')
+    raw(b'\x3D'); raw(struct.pack('<I', thresh))
+    jmp32(0x86, 'keep')
+    raw(b'\x89\x83'); d32(ring_va + lastw_slot)     # 先存 LASTW
+    # —— DWM 函数懒解析（cloak 用）——
+    raw(b'\x8B\x83'); d32(ring_va + MISAKI_SUB_DWM_PTR)
+    raw(b'\x85\xC0')
+    jmp8(0x75, 'dwmrdy')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_DWMAPI)
+    raw(b'\x50')
+    raw(b'\xFF\x93'); d32(MISAKI_GMH_IAT)
+    raw(b'\x85\xC0')
+    jmp8(0x74, 'dwmrdy')
+    raw(b'\x8B\xD0')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_DWMSWA)
+    raw(b'\x50\x52')
+    raw(b'\xFF\x93'); d32(MISAKI_GPA_IAT)
+    raw(b'\x89\x83'); d32(ring_va + MISAKI_SUB_DWM_PTR)
+    marks.append(('dwmrdy', len(b)))
+    # —— 刷新本窗 ——
+    raw(b'\x6A\x00')
+    raw(b'\x8D\x83'); d32(cls_va)
+    raw(b'\x50')
+    raw(b'\xFF\x93'); d32(MISAKI_FWA_IAT)
+    raw(b'\x85\xC0')
+    jmp8(0x74, 'keep')
+    raw(b'\x8B\xF8')                                  # edi=hwnd
+    raw(b'\x89\x83'); d32(ring_va + hwnd_slot)        # 保存句柄
+    raw(b'\x8B\x8B'); d32(ring_va + MISAKI_SUB_DWM_PTR)
+    raw(b'\x85\xC9')
+    jmp8(0x74, 'ncmk')
+    raw(b'\xC7\x83'); d32(ring_va + MISAKI_SUB_BOOL); raw(b'\x01\x00\x00\x00')
+    raw(b'\x6A\x04')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_SUB_BOOL)
+    raw(b'\x50\x6A\x0D\x57')
+    raw(b'\xFF\xD1')                                  # call ecx（cloak=1）
+    marks.append(('ncmk', len(b)))
+    raw(b'\xC6\x83'); d32(ring_va + flag_slot); raw(b'\x01')   # 待解除
+    raw(b'\x6A\xEC\x57')
+    raw(b'\xFF\x93'); d32(MISAKI_GWLA_IAT)
+    raw(b'\x89\x83'); d32(ring_va + MISAKI_SUB_BOOL)
+    raw(b'\x8B\xD0')
+    raw(b'\x81\xE2\xFF\xFF\xF7\xFF')
+    raw(b'\x52\x6A\xEC\x57')
+    raw(b'\xFF\x93'); d32(MISAKI_SWLA_IAT)
+    raw(b'\x8B\x93'); d32(ring_va + MISAKI_SUB_BOOL)
+    raw(b'\x52\x6A\xEC\x57')
+    raw(b'\xFF\x93'); d32(MISAKI_SWLA_IAT)
+    jmpE('restore')
+    marks.append(('keep', len(b)))
+    raw(b'\x89\x83'); d32(ring_va + lastw_slot)     # 仅校准
+    marks.append(('restore', len(b)))
+    # —— 恢复 DPI 上下文 ——
+    raw(b'\x8B\x8B'); d32(ring_va + MISAKI_SUB_CTX2)
+    raw(b'\x85\xC9')
+    jmp8(0x74, 'tail')
+    raw(b'\x51')
+    raw(b'\xFF\x93'); d32(ring_va + MISAKI_SUB_STDA)
+    raw(b'\xC7\x83'); d32(ring_va + MISAKI_SUB_CTX2); raw(b'\x00\x00\x00\x00')
+    marks.append(('tail', len(b)))
+    raw(b'\x8B\x83'); d32(old_slot_va)
+    raw(b'\x5F\x5E\x5B')
+    raw(b'\xFF\xE0')
+    mk = dict(marks)
+    for disp_pos, t, size in ji:
+        off = mk[t] - (disp_pos + size)
+        if size == 1:
+            assert -128 <= off <= 127, (t, off)
+            b[disp_pos] = off & 0xFF
+        else:
+            struct.pack_into('<i', b, disp_pos, off)
+    return bytes(b)
+
+
 def build_misaki() -> bytes:
     """构建 output/misaki.dll 并返回补丁后的数据。"""
     base = os.path.dirname(os.path.abspath(__file__))
@@ -2347,8 +2576,28 @@ def build_misaki() -> bytes:
             f'预期 size={MISAKI_ORIG_SIZE} crc32={MISAKI_ORIG_CRC32:08x})')
 
     data = bytearray(orig)
+    ring_rva = add_cave_section(data, b'\x00' * 0x1000)   # 追加可写 .cave 段
+    ring_va = 0x400000 + ring_rva
+    e2 = struct.unpack_from('<I', data, 0x3C)[0]
+    nsec2 = struct.unpack_from('<H', data, e2 + 6)[0]
+    sec_tab2 = e2 + 24 + struct.unpack_from('<H', data, e2 + 20)[0]
+    sec_raw2 = struct.unpack_from('<I', data, sec_tab2 + (nsec2 - 1) * 40 + 20)[0]
+    wp1 = _misaki_wndproc(ring_va + MISAKI_SUB_WP1, ring_va + MISAKI_SUB_OLD1, ring_va,
+                          MISAKI_CLOCK_W, ring_va + MISAKI_STR1, MISAKI_SUB_LASTW,
+                          MISAKI_SUB_CLK1HWND, MISAKI_SUB_CLK1FLAG)
+    wp2 = _misaki_wndproc(ring_va + MISAKI_SUB_WP2, ring_va + MISAKI_SUB_OLD2, ring_va,
+                          MISAKI_INFO_W, ring_va + MISAKI_STR2, MISAKI_SUB_LASTW2,
+                          MISAKI_SUB_CLK2HWND, MISAKI_SUB_CLK2FLAG)
+    data[sec_raw2 + MISAKI_SUB_WP1: sec_raw2 + MISAKI_SUB_WP1 + len(wp1)] = wp1
+    data[sec_raw2 + MISAKI_SUB_WP2: sec_raw2 + MISAKI_SUB_WP2 + len(wp2)] = wp2
+    data[sec_raw2 + MISAKI_STR1: sec_raw2 + MISAKI_STR1 + 17] = b'Tanalogclockform\x00'
+    data[sec_raw2 + MISAKI_STR_USER32: sec_raw2 + MISAKI_STR_USER32 + 11] = b'user32.dll\x00'
+    data[sec_raw2 + MISAKI_STR_STDA: sec_raw2 + MISAKI_STR_STDA + 29] = b'SetThreadDpiAwarenessContext\x00' 
+    data[sec_raw2 + MISAKI_STR2: sec_raw2 + MISAKI_STR2 + 13] = b'Tcpuloadform\x00' 
+    data[sec_raw2 + MISAKI_STR_DWMAPI: sec_raw2 + MISAKI_STR_DWMAPI + 11] = b'dwmapi.dll\x00'
+    data[sec_raw2 + MISAKI_STR_DWMSWA: sec_raw2 + MISAKI_STR_DWMSWA + 22] = b'DwmSetWindowAttribute\x00' 
     fo = MISAKI_CAVE_VA - 0x400C00
-    stub = _build_misaki_stub(MISAKI_CAVE_VA)
+    stub = _build_misaki_stub(MISAKI_CAVE_VA, ring_va)
     if any(data[fo:fo + len(stub)]):
         raise RuntimeError('misaki：cave 位置非空')
     data[fo:fo + len(stub)] = stub
@@ -2364,8 +2613,8 @@ def build_misaki() -> bytes:
         f.write(bytes(data))
     print(f'misaki.dll 写入完成 → {out_path}')
     print(f'  allclear 行清零填充值改为 0x01（信息窗整层 / 时钟整窗，1/255 不可见）')
+    print(f'  两窗各自子类化：向上穿越 100% 时 cloak + WS_EX_LAYERED 往返刷新')
     return bytes(data)
-
 
 # ============================================================================
 # 退出崩溃修复层（定稿：EAT 重定向 + DllMain detach 归还）
@@ -2390,9 +2639,10 @@ def build_misaki() -> bytes:
 #      切到别的 SHIORI 人格、退出 SSP 全都覆盖（不依赖"下一次 load"）。
 #
 # 布局（.cave 固定偏移）：
-#   0x2400  存根 0x100（切-5+存属性 + 双销毁 + call 完好入口 + 跳收尾）
+#   0x2400  存根（开头先清扫一轮 + 切-5/存属性 + 双销毁 + call 完好入口 + 跳收尾）
 #   0x226A  收尾例程（只断路；不恢复 DPI）
-#   0x2360  枚举回调（断路）
+#   0x7500  枚举回调（断路：本模块范围 + 监控窗类名）
+#           0x7600 类名缓冲 / 0x7660 "Tanalogclockform" / 0x7680 "Tcpuloadform"
 #   0x23F4  上下文暂存槽 4B（存根写；供 SetPropA 转存窗口属性）
 #   0x2640  V7 归还桩 / 0x2700 V7 入口跳板（DllMain detach 归还）
 #   0x2600  窗口类名 / 0x2630 属性名 "dpictx"（卸载存根与归还桩共用）
@@ -2400,7 +2650,10 @@ def build_misaki() -> bytes:
 EXITFIX_ENABLE = True
 EXITFIX_STUB_OFF = 0x2400        # 存根
 EXITFIX_POST_OFF = 0x226A        # 收尾例程（teardown 返回后执行）
-EXITFIX_CB_OFF   = 0x2360        # 枚举回调（断路）
+EXITFIX_CB_OFF   = 0x7500        # 枚举回调（断路：本模块范围 + 监控窗类名）
+EXITFIX_CB2_BUF  = 0x7600        # 类名缓冲（64B -> 0x763F）
+EXITFIX_CB2_TA   = 0x7660        # "Tanalogclockform\0"（17B）
+EXITFIX_CB2_TI   = 0x7680        # "Tcpuloadform\0"（13B）
 EXITFIX_PSET_OFF = 0xB0          # .cave 高分屏数据区 +0x00：PSET 指针槽（包装桩惰性解析）
 EXITFIX_CTX_STASH = 0x23F4       # 旧 DPI 上下文暂存槽（存根写；供 SetPropA 转存 SSPMAIN 属性）
 EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口 RVA（入口保持原样；EAT 重定向到存根）
@@ -2409,6 +2662,7 @@ EXITFIX_UNLOAD_PROLOG = bytes.fromhex('55 8B EC 51 53')   # 原 unload 入口序
 _EXF_IAT_GWL    = 0xB3664        # GetWindowLongA
 _EXF_IAT_SWL    = 0xB3568        # SetWindowLongA
 _EXF_IAT_DEFWND = 0xB3764        # DefWindowProcA
+_EXF_IAT_GCL    = 0xB36F0        # GetClassNameA
 _EXF_IAT_ENUMW  = 0xB3714        # EnumWindows
 _EXF_FREE_THUNK = 0x402E40       # TObject.Free 跳板
 _EXF_SLOT_A     = 0x4B08CC       # 注册窗体槽 A（Tnotifyform）
@@ -2425,7 +2679,8 @@ CTXDETACH_TRAMP_OFF = 0x2700     # 入口跳板（原序言 6 字节 + 跳回入
 
 
 def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
-    """存根（0x80B）：切请求态 DPI 上下文 + 销毁槽 A/B + call teardown + 跳收尾例程。"""
+    """存根（卸载导出目标）：先按类名清扫监控窗（防 misaki 残留桩被消息打到），
+    再切请求态 DPI 上下文 + 销毁槽 A/B + call teardown + 跳收尾例程。"""
     anchor = stub_va + 5          # call 在偏移 0（无 pushal 前置），返回址 = 起点+5
     def L(va):                    # 绝对 VA 相对锚点的位移
         return struct.pack('<i', va - anchor)
@@ -2433,6 +2688,8 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
         return L(cave_va + off)
     b = bytearray()
     b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx（锚点，先于 pushal）
+    b += b'\x8D\x83' + C(EXITFIX_POST_OFF)              # lea eax,[收尾例程]
+    b += b'\xFF\xD0'                                    # call eax（卸载一开始先清扫一轮）
     # —— 线程 DPI 上下文切 UNAWARE_GDISCALED(-5)：析构触发的存档将读到
     #    96dpi 虚拟坐标（与手动关窗一致，修退出存档尺寸 ×1.5）；旧上下文
     #    先存槽，由收尾例程恢复（teardown 也在 GDISCALED 下运行，其存档坐标一致）。
@@ -2510,35 +2767,77 @@ def _exitfix_post(cave_va: int) -> bytes:
 
 
 def _exitfix_cb(cave_va: int) -> bytes:
-    """枚举回调：WndProc 落在模块 [base, base+0x100000) 内 -> 断路。"""
+    """枚举回调：WndProc 落在本模块 [base, base+0x100000) 内，或窗口类名为
+    Tanalogclockform / Tcpuloadform（misaki 卸载后残留的桩也会被覆盖）→ 断路。"""
     cv = cave_va + EXITFIX_CB_OFF
     def L(va):
         return struct.pack('<i', va - cv)
     b = bytearray()
-    b += b'\x60'                                        # pushal
-    b += b'\xE8\x00\x00\x00\x00\x5B\x81\xEB' + struct.pack('<I', 6)   # ebx = 起点
-    b += b'\x8B\x6C\x24\x24'                            # mov ebp,[esp+0x24]  (hwnd)
-    b += b'\x6A\xFC\x55\xFF\x93' + L(0x400000 + _EXF_IAT_GWL)   # GWL(hwnd,-4) -> eax
-    b += b'\x85\xC0'                                    # test eax,eax
-    j0 = len(b); b += b'\x74\x00'                       # je -> END
-    b += b'\x8B\xF0'                                    # mov esi,eax (W)
-    b += b'\x8B\xC3\x2D' + struct.pack('<I', cave_va + EXITFIX_CB_OFF - 0x400000)
-    #                                  ^ eax = ebx - (本回调 RVA) = 模块基址
-    b += b'\x8B\xD0'                                    # mov edx,eax (base)
-    b += b'\x3B\xF2'                                    # cmp esi,edx
-    j1 = len(b); b += b'\x72\x00'                       # jb -> END（W < base）
-    b += b'\x81\xC2\x00\x00\x10\x00'                    # add edx, 0x100000
-    b += b'\x3B\xF2'                                    # cmp esi,edx
-    j2 = len(b); b += b'\x73\x00'                       # jae -> END（W >= 上限）
-    # —— 断路：SetWindowLong(hwnd, -4, DefWindowProcA) ——
-    b += b'\xFF\xB3' + L(0x400000 + _EXF_IAT_DEFWND)    # push [DefWindowProcA]
-    b += b'\x6A\xFC\x55'                                # push -4; push hwnd
-    b += b'\xFF\x93' + L(0x400000 + _EXF_IAT_SWL)       # call [SetWindowLongA]
-    end = len(b)
-    b += b'\x61\xB8\x01\x00\x00\x00\xC2\x08\x00'        # popad; mov eax,1; ret 8
-    for j in (j0, j1, j2):
-        b[j + 1] = (end - (j + 2)) & 0xFF
-    assert len(b) <= 0x70, len(b)                       # 回调区上限 0x70（到 0x23D0）
+    ji = []
+    marks = []
+
+    def raw(x):
+        b.extend(x)
+
+    def jrel8(op, label):
+        raw(bytes([op, 0])); ji.append((len(b) - 1, label, 1))
+
+    def mark(label):
+        marks.append((label, len(b)))
+
+    raw(b'\x60')                                       # pushal
+    raw(b'\xE8\x00\x00\x00\x00\x5B\x81\xEB')    # call$+5; pop ebx; sub ebx,6
+    raw(struct.pack('<I', 6))                           # ebx = 回调起点
+    raw(b'\xFC')                                       # cld
+    raw(b'\x8B\x6C\x24\x24')                        # mov ebp,[esp+0x24]（hwnd）
+    raw(b'\x6A\xFC\x55')
+    raw(b'\xFF\x93'); raw(L(0x400000 + _EXF_IAT_GWL))  # GWL(hwnd,-4)
+    raw(b'\x85\xC0')
+    jrel8(0x74, 'clschk')
+    raw(b'\x8B\xF0')                                   # esi=W
+    raw(b'\x8B\xC3\x2D'); raw(struct.pack('<I', cave_va + EXITFIX_CB_OFF - 0x400000))
+    raw(b'\x8B\xD0')                                   # edx=base
+    raw(b'\x3B\xF2')
+    jrel8(0x72, 'clschk')
+    raw(b'\x81\xC2\x00\x00\x10\x00')
+    raw(b'\x3B\xF2')
+    jrel8(0x73, 'clschk')
+    jrel8(0xEB, 'swap')
+    mark('clschk')
+    raw(b'\x6A\x3C')                                   # push 60
+    raw(b'\x8D\x83'); raw(L(cave_va + EXITFIX_CB2_BUF))
+    raw(b'\x50\x55')                                   # push buf; push hwnd
+    raw(b'\xFF\x93'); raw(L(0x400000 + _EXF_IAT_GCL))  # GetClassNameA
+    raw(b'\x83\xF8\x10')                              # cmp eax,16
+    jrel8(0x75, 'ck2')
+    raw(b'\x8D\xB3'); raw(L(cave_va + EXITFIX_CB2_BUF))
+    raw(b'\x8D\xBB'); raw(L(cave_va + EXITFIX_CB2_TA))
+    raw(b'\xB9\x10\x00\x00\x00')                    # mov ecx,16
+    raw(b'\xF3\xA6')                                   # repe cmpsb
+    jrel8(0x74, 'swap')
+    mark('ck2')
+    raw(b'\x83\xF8\x0C')                              # cmp eax,12
+    jrel8(0x75, 'done')
+    raw(b'\x8D\xB3'); raw(L(cave_va + EXITFIX_CB2_BUF))
+    raw(b'\x8D\xBB'); raw(L(cave_va + EXITFIX_CB2_TI))
+    raw(b'\xB9\x0C\x00\x00\x00')
+    raw(b'\xF3\xA6')
+    jrel8(0x75, 'done')
+    mark('swap')
+    raw(b'\xFF\xB3'); raw(L(0x400000 + _EXF_IAT_DEFWND))  # push [DefWindowProcA]
+    raw(b'\x6A\xFC\x55')
+    raw(b'\xFF\x93'); raw(L(0x400000 + _EXF_IAT_SWL))     # SetWindowLongA
+    mark('done')
+    raw(b'\x61\xB8\x01\x00\x00\x00\xC2\x08\x00')   # popad; mov eax,1; ret 8
+    mk = dict(marks)
+    for pos, label, sz in ji:
+        off = mk[label] - (pos + sz)
+        if sz == 1:
+            assert -128 <= off <= 127, (label, off)
+            b[pos] = off & 0xFF
+        else:
+            struct.pack_into('<i', b, pos, off)
+    assert len(b) <= 0x120, len(b)
     return bytes(b)
 
 
@@ -2577,7 +2876,7 @@ def patch_exit_fix(data: bytearray) -> bytearray:
         if any(data[cave_raw + off:cave_raw + off + ln]):
             raise RuntimeError('exitfix：%s @cave+0x%X 非零，疑似布局冲突' % (what, off))
     expect_zero(EXITFIX_POST_OFF, 0x22C0 - EXITFIX_POST_OFF, '收尾例程区')  # 0x22C0 起为既有桩，避开
-    expect_zero(EXITFIX_CB_OFF, 0x70, '回调区')
+    expect_zero(EXITFIX_CB_OFF, 0x200, '回调区(含类名缓冲/字符串)')
     expect_zero(EXITFIX_CTX_STASH, 4, '上下文暂存槽')
     if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x100]):
         raise RuntimeError('exitfix：存根区 @cave+0x%X 非零' % EXITFIX_STUB_OFF)
@@ -2589,6 +2888,8 @@ def patch_exit_fix(data: bytearray) -> bytearray:
     data[cave_raw + EXITFIX_POST_OFF:cave_raw + EXITFIX_POST_OFF + len(d_post)] = d_post
     d_cb = _exitfix_cb(cave_va)
     data[cave_raw + EXITFIX_CB_OFF:cave_raw + EXITFIX_CB_OFF + len(d_cb)] = d_cb
+    data[cave_raw + EXITFIX_CB2_TA:cave_raw + EXITFIX_CB2_TA + 17] = b'Tanalogclockform\x00'
+    data[cave_raw + EXITFIX_CB2_TI:cave_raw + EXITFIX_CB2_TI + 13] = b'Tcpuloadform\x00'
 
     # —— 原 unload 入口（函数体第一条指令处）：内联跳转 -> 存根 ——
     off_u = rva_off(EXITFIX_UNLOAD_RVA)
