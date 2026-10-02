@@ -2295,6 +2295,9 @@ MISAKI_SUB_CLK1HWND = 0x4AC        # 时钟窗句柄（解除 cloak 用）
 MISAKI_SUB_CLK2HWND = 0x4B0        # 信息窗句柄
 MISAKI_SUB_CLK1FLAG = 0x4B4        # 时钟窗待解除 cloak（byte）
 MISAKI_SUB_CLK2FLAG = 0x4B5        # 信息窗待解除 cloak（byte）
+MISAKI_LIB_IAT = 0x4A0258          # kernel32!LoadLibraryA（dwmapi 兜底）
+MISAKI_SUB_ARMED1 = 0x4B6          # 时钟窗校准位（byte；>阈值一次后才允许触发）
+MISAKI_SUB_ARMED2 = 0x4B7          # 信息窗校准位（byte）
 MISAKI_STR_DWMAPI = 0x480          # "dwmapi.dll\0"（11B）
 MISAKI_STR_DWMSWA = 0x490          # "DwmSetWindowAttribute\0"（22B）
 MISAKI_SUB_WP2 = 0x200             # 信息窗 WndProc 桩
@@ -2429,7 +2432,7 @@ def _build_misaki_stub(cave_va, ring_va):
     return bytes(code)
 
 
-def _misaki_wndproc(stub_va, old_slot_va, ring_va, thresh, cls_va, lastw_slot, hwnd_slot, flag_slot):
+def _misaki_wndproc(stub_va, old_slot_va, ring_va, thresh, cls_va, lastw_slot, hwnd_slot, flag_slot, armed_slot):
     """单窗桩：0x47 时采样物理宽（线程尖峰 PMv2）；门控
     "上次 ≤ thresh 且本次 > thresh"（向上穿越 100%）→ 刷新本窗。
     保护 EBX/ESI/EDI，尾跳旧过程。"""
@@ -2485,6 +2488,16 @@ def _misaki_wndproc(stub_va, old_slot_va, ring_va, thresh, cls_va, lastw_slot, h
     raw(b'\x8B\x44\x24\x08')
     raw(b'\x2B\x44\x24\x00')
     raw(b'\x83\xC4\x10')
+    # —— 首次校准（ARMED）：从未进入过放大态前只记录宽度，绝不触发 ——
+    raw(b'\x80\xBB'); d32(ring_va + armed_slot); raw(b'\x00')
+    jmp8(0x75, 'armed_ok')
+    raw(b'\x3D'); raw(struct.pack('<I', thresh))
+    jmp8(0x76, 'arm_store')
+    raw(b'\xC6\x83'); d32(ring_va + armed_slot); raw(b'\x01')
+    marks.append(('arm_store', len(b)))
+    raw(b'\x89\x83'); d32(ring_va + lastw_slot)
+    jmpE('keep')
+    marks.append(('armed_ok', len(b)))
     # —— 门控 ——
     raw(b'\x8B\x8B'); d32(ring_va + lastw_slot)
     raw(b'\x81\xF9'); raw(struct.pack('<I', thresh))
@@ -2500,7 +2513,13 @@ def _misaki_wndproc(stub_va, old_slot_va, ring_va, thresh, cls_va, lastw_slot, h
     raw(b'\x50')
     raw(b'\xFF\x93'); d32(MISAKI_GMH_IAT)
     raw(b'\x85\xC0')
+    jmp8(0x75, 'gotdll')
+    raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_DWMAPI)
+    raw(b'\x50')
+    raw(b'\xFF\x93'); d32(MISAKI_LIB_IAT)             # LoadLibraryA 兜底（宿主可能未加载 dwmapi）
+    raw(b'\x85\xC0')
     jmp8(0x74, 'dwmrdy')
+    marks.append(('gotdll', len(b)))
     raw(b'\x8B\xD0')
     raw(b'\x8D\x83'); d32(ring_va + MISAKI_STR_DWMSWA)
     raw(b'\x50\x52')
@@ -2575,6 +2594,12 @@ def build_misaki() -> bytes:
             f'input/misaki.dll 与预期不符 (size={len(orig)} crc32={crc:08x}，'
             f'预期 size={MISAKI_ORIG_SIZE} crc32={MISAKI_ORIG_CRC32:08x})')
 
+    for _n, _v in (('FWA', MISAKI_FWA_IAT), ('GWLA', MISAKI_GWLA_IAT), ('SWLA', MISAKI_SWLA_IAT),
+                   ('GR', MISAKI_GR_IAT), ('GMH', MISAKI_GMH_IAT), ('GPA', MISAKI_GPA_IAT),
+                   ('LIB', MISAKI_LIB_IAT)):
+        if _v < 0x400000:
+            raise RuntimeError(f'misaki：IAT 常量 {_n}=0x{_v:X} 疑似少了镜像基址')
+
     data = bytearray(orig)
     ring_rva = add_cave_section(data, b'\x00' * 0x1000)   # 追加可写 .cave 段
     ring_va = 0x400000 + ring_rva
@@ -2584,10 +2609,10 @@ def build_misaki() -> bytes:
     sec_raw2 = struct.unpack_from('<I', data, sec_tab2 + (nsec2 - 1) * 40 + 20)[0]
     wp1 = _misaki_wndproc(ring_va + MISAKI_SUB_WP1, ring_va + MISAKI_SUB_OLD1, ring_va,
                           MISAKI_CLOCK_W, ring_va + MISAKI_STR1, MISAKI_SUB_LASTW,
-                          MISAKI_SUB_CLK1HWND, MISAKI_SUB_CLK1FLAG)
+                          MISAKI_SUB_CLK1HWND, MISAKI_SUB_CLK1FLAG, MISAKI_SUB_ARMED1)
     wp2 = _misaki_wndproc(ring_va + MISAKI_SUB_WP2, ring_va + MISAKI_SUB_OLD2, ring_va,
                           MISAKI_INFO_W, ring_va + MISAKI_STR2, MISAKI_SUB_LASTW2,
-                          MISAKI_SUB_CLK2HWND, MISAKI_SUB_CLK2FLAG)
+                          MISAKI_SUB_CLK2HWND, MISAKI_SUB_CLK2FLAG, MISAKI_SUB_ARMED2)
     data[sec_raw2 + MISAKI_SUB_WP1: sec_raw2 + MISAKI_SUB_WP1 + len(wp1)] = wp1
     data[sec_raw2 + MISAKI_SUB_WP2: sec_raw2 + MISAKI_SUB_WP2 + len(wp2)] = wp2
     data[sec_raw2 + MISAKI_STR1: sec_raw2 + MISAKI_STR1 + 17] = b'Tanalogclockform\x00'
@@ -2613,7 +2638,7 @@ def build_misaki() -> bytes:
         f.write(bytes(data))
     print(f'misaki.dll 写入完成 → {out_path}')
     print(f'  allclear 行清零填充值改为 0x01（信息窗整层 / 时钟整窗，1/255 不可见）')
-    print(f'  两窗各自子类化：向上穿越 100% 时 cloak + WS_EX_LAYERED 往返刷新')
+    print(f'  两窗各自子类化：向上穿越 100% 时 cloak + WS_EX_LAYERED 往返刷新（含 dwmapi 兜底/校准位）')
     return bytes(data)
 
 # ============================================================================
