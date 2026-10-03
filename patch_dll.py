@@ -2315,6 +2315,21 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
         return L(cave_va + off)
     b = bytearray()
     b += b'\xE8\x00\x00\x00\x00\x5B'                    # call $+5; pop ebx（锚点，先于 pushal）
+    # —— 键盘修复：卸载前先摘 WH_GETMESSAGE 钩子（钩子回调在本模块内，不摘则卸载后崩）——
+    if KBD_ENABLE:
+        b += b'\x8B\x8B' + C(KBD_HHK)                   # mov ecx,[hhk]
+        b += b'\x85\xC9'                                # test ecx,ecx
+        _k1 = len(b); b += b'\x0F\x84\x00\x00\x00\x00'  # je .kend（本就没装）
+        b += b'\x8B\x83' + C(KBD_UNHOOK)                # mov eax,[真 UnhookWindowsHookEx]
+        b += b'\x85\xC0'                                # test eax,eax
+        _k2 = len(b); b += b'\x0F\x84\x00\x00\x00\x00'  # je .clr（API 未解析）
+        b += b'\x51'                                    # push ecx
+        b += b'\xFF\xD0'                                # call eax
+        _kclr = len(b)
+        b += b'\xC7\x83' + C(KBD_HHK) + b'\x00\x00\x00\x00'  # mov [hhk],0
+        _kend = len(b)
+        struct.pack_into('<i', b, _k1 + 2, _kend - (_k1 + 6))
+        struct.pack_into('<i', b, _k2 + 2, _kclr - (_k2 + 6))
     b += b'\x8D\x83' + C(EXITFIX_POST_OFF)              # lea eax,[收尾例程]
     b += b'\xFF\xD0'                                    # call eax（卸载一开始先清扫一轮）
     # —— 线程 DPI 上下文切 UNAWARE_GDISCALED(-5)：析构触发的存档将读到
@@ -4220,6 +4235,310 @@ def build_ime_layer(data):
     return data
 
 
+# ============================================================================
+# 键盘修复层（Tab 切换 / Alt+助记符）：复刻宿主泵缺失的 VCL 键预处理
+# ----------------------------------------------------------------------------
+# 背景：ssp.exe 的消息泵 JWinThread::TranslateDispatchMessage(0x5A72A0) 只有
+#   TranslateMessage + DispatchMessageW；DLL 自带 VCL 泵（TApplication.ProcessMessage
+#   0x44FA38）在 SSP 下不运行。其键处理链为 IsHintMsg → IsMDIMsg → IsKeyMsg → IsDlgMsg：
+#   - IsKeyMsg(0x44F8E4)：把 WM_KEYxxx(0x100..0x108) 转成 CN_xxx(+0xBC00；
+#     0xBD00=CN_KEYDOWN、0xBD04=CN_SYSKEYDOWN) SendMessageA 给消息窗（或其 VCL 祖先）
+#     → 控件 CNKeyDown → CM_DIALOGKEY(0xB01E) → 窗体 CMDlgKey → SelectNext
+#     （VCL 控件树自身顺序，跨容器/助记符天然正确）；命中返回非 0；
+#   - IsDlgMsg(0x44F870) = IsDialogMessageA([App+0xA0], MSG)：SSP 宿主不维护
+#     [App+0xA0]（MATERIA 由宿主 0xB031 通知维护），这里补写消息窗根窗体兜底。
+# 方案：挂钩原 load 入口(0xAA374) → 安装桩解析真 user32 函数（绕 SSP 对 ghost DLL
+#   IAT 的假桩）→ 宿主门控（SSP 主窗存在且属本进程，否则整层 no-op）→ 取主窗线程
+#   装 WH_GETMESSAGE 钩子。钩子对 "PM_REMOVE + 0x100..0x109 + 消息窗类属本模块"
+#   的消息按泵序补做 IsKeyMsg →（未命中）IsDlgMsg；处理成功则把消息号清为 WM_NULL
+#   （宿主裸派发也不再生效），其余一律 CallNextHookEx 放行。
+# 卸载安全：退出修复存根（_exitfix_stub）开头先 UnhookWindowsHookEx 再走原流程。
+# 布局（.cave）：0x6400 钩子(≤0x300) / 0x6700 安装桩(≤0x300) / 0x6A00 字符串组(0x77) /
+#   0x6A80 hhk / 0x6A84 真 UnhookWindowsHookEx / 0x6A88 GetParent /
+#   0x6A8C GetClassLongA / 0x6A90 本进程 pid 暂存 / 0x6A94 主窗 pid 暂存 /
+#   0x6A98 链返回值暂存
+# ============================================================================
+KBD_ENABLE = True
+KBDFIX_LOAD_RVA = 0xAA374
+KBDFIX_LOAD_PROLOG = bytes.fromhex('55 8B EC B9 07 00 00 00')
+KBD_HOOK_OFF = 0x6400
+KBD_SETUP_OFF = 0x6700
+KBD_STR_OFF = 0x6A00
+KBD_HHK = 0x6A80
+KBD_UNHOOK = 0x6A84
+KBD_GA = 0x6A88
+KBD_GCL = 0x6A8C
+KBD_PID_SELF = 0x6A90
+KBD_PID_WIN = 0x6A94
+KBD_CRET = 0x6A98
+
+KBD_IAT_CNHE = 0x4B3790        # user32!CallNextHookEx
+KBD_IAT_GMH = 0x4B31E4         # kernel32!GetModuleHandleA
+KBD_IAT_GPA = 0x4B31E0         # kernel32!GetProcAddress
+KBD_IAT_GCPI = 0x4B339C        # kernel32!GetCurrentProcessId
+KBD_IAT_FW = 0x4B3704          # user32!FindWindowA
+KBD_IAT_GWTPID = 0x4B3654      # user32!GetWindowThreadProcessId
+KBD_MAIN_CLASS = b'SSPMAIN-3145fdab-2ee0-4158-a1ce-832b553ad790\x00'
+
+
+def _kbd_strs():
+    return [(0x00, b'user32.dll\x00'), (0x0B, b'SetWindowsHookExA\x00'),
+            (0x1D, b'UnhookWindowsHookEx\x00'), (0x31, b'GetParent\x00'),
+            (0x3B, KBD_MAIN_CLASS), (0x69, b'GetClassLongA\x00')]
+
+
+def _build_kbd_hook(hook_va, cave_va, hook_rva):
+    b = bytearray()
+    ji = []
+    marks = {}
+
+    def op(*xs):
+        for x in xs:
+            b.append(x) if isinstance(x, int) else b.extend(x)
+
+    def d32(va):
+        return struct.pack('<i', va - hook_va)
+
+    def C(off):
+        return d32(cave_va + off)
+
+    def mark(n):
+        marks[n] = len(b)
+
+    def jcc(cc, n):
+        op(0x0F, cc); ji.append((len(b), n)); op(0, 0, 0, 0)
+
+    def jmp(n):
+        op(0xE9); ji.append((len(b), n)); op(0, 0, 0, 0)
+
+    op(0x53, 0x55, 0x56, 0x57)                      # push ebx/ebp/esi/edi（定栈帧）
+
+    def reanchor():                                  # 外部调用后重算锚点（不假设 API 保 EBX）
+        o = len(b)
+        op(0xE8, 0, 0, 0, 0, 0x5B)
+        op(0x81, 0xEB); op(struct.pack('<I', o + 5))
+
+    def callabs(va):                                 # 同模块内 call（构建期 rel32，重定位安全）
+        o = len(b)
+        op(0xE8); op(struct.pack('<i', va - (hook_va + o + 5)))
+
+    op(0xE8, 0, 0, 0, 0, 0x5B)                      # call$+5; pop ebx
+    op(0x81, 0xEB, 9, 0, 0, 0)                      # sub ebx,9（4 压栈 + 返回址）→ ebx=hook_va
+    # —— 先把消息放行给链上其余钩子（msctf/TSF 的输入法键处理、宿主钩子），再对
+    #    "处理之后"的消息复刻 VCL 泵——与 MATERIA 同序（所有钩子先于泵执行）。
+    #    组字中的按键会被 TSF 标记/消费，这里自然跳过，不干扰输入法。 ——
+    op(0x8B, 0x44, 0x24, 0x1C)                      # eax=lParam
+    op(0x8B, 0x4C, 0x24, 0x18)                      # ecx=wParam
+    op(0x8B, 0x54, 0x24, 0x14)                      # edx=nCode
+    op(0x50, 0x51, 0x52, 0x6A, 0x00)
+    op(0xFF, 0x93); op(d32(KBD_IAT_CNHE))           # CallNextHookEx（链先跑）
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_CRET))                 # 暂存链返回值（最终原样返回）
+    op(0x8B, 0x7C, 0x24, 0x1C)                      # edi=[lParam]=MSG*
+    op(0x83, 0x7F, 0x04, 0x00); jcc(0x84, 'done')   # 已被链上钩子消费（message==0）
+    op(0x8B, 0x44, 0x24, 0x14)                      # eax=nCode
+    op(0x85, 0xC0); jcc(0x88, 'done')               # nCode<0
+    op(0x83, 0x7C, 0x24, 0x18, 0x01)                # cmp [wParam],PM_REMOVE
+    jcc(0x85, 'done')
+    op(0x8B, 0x47, 0x04)                            # eax=msg.message（链处理后重读）
+    op(0x2D, 0, 1, 0, 0)                            # sub eax,0x100
+    op(0x83, 0xF8, 9); jcc(0x87, 'done')            # 不在 0x100..0x109
+    op(0x8B, 0x37)                                  # esi=msg.hwnd
+    op(0x8B, 0x83); op(C(KBD_GCL))                  # [GetClassLongA] 未解析 → 放行
+    op(0x85, 0xC0); jcc(0x84, 'done')
+    op(0x6A, 0xF0, 0x56)                            # push -16(GCL_HMODULE); push hwnd
+    op(0xFF, 0x93); op(C(KBD_GCL))                  # call GetClassLongA
+    reanchor()
+    op(0x89, 0xDA); op(0x81, 0xEA); op(struct.pack('<I', hook_rva))
+    op(0x3B, 0xC2); jcc(0x84, 'wndok')              # 类属本模块 → 通过
+    # 退路：父窗的类也属本模块也算（系统类子控件/嵌套容器）
+    op(0x8B, 0x83); op(C(KBD_GA))                   # [GetParent] 未解析 → 放行
+    op(0x85, 0xC0); jcc(0x84, 'done')
+    op(0x56); op(0xFF, 0x93); op(C(KBD_GA))         # call GetParent(hwnd)
+    reanchor()
+    op(0x85, 0xC0); jcc(0x84, 'done')
+    op(0x6A, 0xF0, 0x50); op(0xFF, 0x93); op(C(KBD_GCL))  # GCL(parent,-16)
+    reanchor()
+    op(0x89, 0xDA); op(0x81, 0xEA); op(struct.pack('<I', hook_rva))
+    op(0x3B, 0xC2); jcc(0x85, 'done')              # jne → 放行
+    mark('wndok')
+    # —— 复刻 VCL 泵的键处理（IsKeyMsg → IsDlgMsg）——
+    op(0x8B, 0x83); op(d32(0x4AF8EC))               # eax=[TApplication 全局]
+    op(0x85, 0xC0); jcc(0x84, 'trydlg')             # 未初始化 → 兜底
+    op(0x8B, 0xD7)                                  # edx=MSG*
+    callabs(0x44F8E4)                               # TApplication.IsKeyMsg
+    reanchor()
+    op(0x84, 0xC0); jcc(0x84, 'trydlg')
+    jmp('eat')                                      # 命中 → 吃掉
+    mark('trydlg')
+    # IsDlgMsg 兜底：仅当 VCL 自己维护了对话框句柄（[App+0xA0]!=0）时才有意义，
+    # 绝不代写该句柄——强设句柄会让 IsDialogMessageA 接管该窗口全部按键的分发
+    # （绕开 TranslateMessage），输入法组字被破坏（实测：所有键被 DLGHIT 吞掉）。
+    op(0x8B, 0x83); op(d32(0x4AF8EC))               # eax=[TApplication 全局]
+    op(0x85, 0xC0); jcc(0x84, 'done')               # 未初始化 → 放行
+    op(0x8B, 0xD7)                                  # edx=MSG*
+    callabs(0x44F870)                               # TApplication.IsDlgMsg（句柄 0 时内部空转）
+    op(0x84, 0xC0); jcc(0x84, 'done')
+    mark('eat')
+    op(0xC7, 0x47, 0x04, 0, 0, 0, 0)                # [MSG+4]=WM_NULL（消息作废）
+    mark('done')
+    op(0x8B, 0x83); op(C(KBD_CRET))                 # eax=链返回值
+    op(0x5F, 0x5E, 0x5D, 0x5B)                      # pop edi/esi/ebp/ebx
+    op(0xC2, 0x0C, 0x00)
+    for pos, n in ji:
+        struct.pack_into('<i', b, pos, marks[n] - (pos + 4))
+    assert len(b) <= 0x300, len(b)
+    return bytes(b)
+
+
+def _build_kbd_setup(setup_va, cave_va, hook_va, setup_rva, load_rva):
+    b = bytearray()
+    ji = []
+    marks = {}
+
+    def op(*xs):
+        for x in xs:
+            b.append(x) if isinstance(x, int) else b.extend(x)
+
+    def d32(va):
+        return struct.pack('<i', va - setup_va)
+
+    def C(off):
+        return d32(cave_va + off)
+
+    def mark(n):
+        marks[n] = len(b)
+
+    def jcc(cc, n):
+        op(0x0F, cc); ji.append((len(b), n)); op(0, 0, 0, 0)
+
+    def jmp(n):
+        op(0xE9); ji.append((len(b), n)); op(0, 0, 0, 0)
+
+    def reanchor():                                  # 外部调用后重算锚点（不假设 API 保 EBX）
+        o = len(b)
+        op(0xE8, 0, 0, 0, 0, 0x5B)
+        op(0x81, 0xEB); op(struct.pack('<I', o + 5))
+
+    op(0x53, 0x56, 0x57)                            # push ebx/esi/edi
+    op(0xE8, 0, 0, 0, 0, 0x5B)                      # call$+5; pop ebx
+    op(0x81, 0xEB, 8, 0, 0, 0)                      # ebx=setup_va
+    op(0x8B, 0x83); op(C(KBD_HHK))                  # eax=[hhk]
+    op(0x85, 0xC0); jcc(0x85, 'replay')             # 已装 → replay
+    op(0x8D, 0x83); op(C(KBD_STR_OFF)); op(0x50)    # GMH("user32.dll")
+    op(0xFF, 0x93); op(d32(KBD_IAT_GMH))
+    reanchor()
+    op(0x85, 0xC0); jcc(0x84, 'replay')
+    op(0x8B, 0xF0)                                  # esi=user32 hmod
+    op(0x8D, 0x83); op(C(KBD_STR_OFF + 0x0B)); op(0x50, 0x56)
+    op(0xFF, 0x93); op(d32(KBD_IAT_GPA))
+    reanchor()
+    op(0x85, 0xC0); jcc(0x84, 'replay')
+    op(0x8B, 0xF8)                                  # edi=真 SetWindowsHookExA
+    op(0x8D, 0x83); op(C(KBD_STR_OFF + 0x1D)); op(0x50, 0x56)
+    op(0xFF, 0x93); op(d32(KBD_IAT_GPA))
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_UNHOOK))               # 真 UnhookWindowsHookEx
+    op(0x8D, 0x83); op(C(KBD_STR_OFF + 0x31)); op(0x50, 0x56)
+    op(0xFF, 0x93); op(d32(KBD_IAT_GPA))
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_GA))                   # 真 GetParent
+    op(0x8D, 0x83); op(C(KBD_STR_OFF + 0x69)); op(0x50, 0x56)
+    op(0xFF, 0x93); op(d32(KBD_IAT_GPA))
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_GCL))                  # 真 GetClassLongA
+    # —— 宿主门控：SSP 主窗存在且属本进程；否则整层 no-op（如 MATERIA）——
+    op(0x6A, 0x00)                                  # FindWindowA(class, NULL)
+    op(0x8D, 0x83); op(C(KBD_STR_OFF + 0x3B)); op(0x50)
+    op(0xFF, 0x93); op(d32(KBD_IAT_FW))
+    reanchor()
+    op(0x85, 0xC0); jcc(0x84, 'replay')
+    op(0x89, 0xC6)                                  # esi=hwnd（user32 句柄已无用）
+    op(0xFF, 0x93); op(d32(KBD_IAT_GCPI))           # GetCurrentProcessId
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_PID_SELF))             # [本进程 pid]
+    op(0x8D, 0x93); op(C(KBD_PID_WIN)); op(0x52)    # push &窗口 pid（arg2）
+    op(0x56)                                        # push hwnd（arg1）
+    op(0xFF, 0x93); op(d32(KBD_IAT_GWTPID))         # GetWindowThreadProcessId → eax=tid
+    reanchor()
+    op(0x85, 0xC0); jcc(0x84, 'replay')             # tid==0 → no-op
+    op(0x8B, 0x93); op(C(KBD_PID_SELF))             # edx=本进程 pid
+    op(0x39, 0x93); op(C(KBD_PID_WIN))              # cmp [窗口 pid],edx
+    jcc(0x85, 'replay')                             # 异进程 → no-op
+    op(0x50)                                        # push tid
+    op(0x89, 0xD8); op(0x2D); op(struct.pack('<I', setup_rva))  # eax=模块运行时基址
+    op(0x50)                                        # hMod
+    op(0x8D, 0x83); op(d32(hook_va)); op(0x50)      # lpfn
+    op(0x6A, 0x03)                                  # WH_GETMESSAGE
+    op(0xFF, 0xD7)                                  # call 真 SetWindowsHookExA
+    reanchor()
+    op(0x89, 0x83); op(C(KBD_HHK))                  # [hhk]=句柄
+    mark('replay')
+    op(0x5F, 0x5E, 0x5B)                            # pop edi/esi/ebx
+    op(0x55, 0x8B, 0xEC, 0xB9, 0x07, 0, 0, 0)       # 重放 load 序言
+    here = len(b)
+    op(0xE9)
+    b += struct.pack('<i', (0x400000 + load_rva + 8) - (setup_va + here + 5))
+    for pos, n in ji:
+        struct.pack_into('<i', b, pos, marks[n] - (pos + 4))
+    assert len(b) <= 0x300, len(b)
+    return bytes(b)
+
+
+def patch_kbd_fix(data: bytearray) -> bytearray:
+    """键盘修复层：写钩子/安装桩/字符串，挂钩原 load 入口（0xAA374）。"""
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt = e + 24
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('kbdfix：未找到 .cave 段')
+
+    def rva_off(rva):
+        for i in range(nsec):
+            off = sec + 40 * i
+            va = _u32(data, off + 12)
+            vs = _u32(data, off + 8)
+            raw = _u32(data, off + 20)
+            if va <= rva < va + vs:
+                return raw + (rva - va)
+        raise RuntimeError('kbdfix：RVA 0x%X 不在任何节' % rva)
+
+    cave_va = 0x400000 + cave_rva
+    if any(data[cave_raw + KBD_HOOK_OFF:cave_raw + 0x7000]):
+        raise RuntimeError('kbdfix：cave 0x6400-0x7000 非零（区域冲突）')
+    hook = _build_kbd_hook(cave_va + KBD_HOOK_OFF, cave_va, cave_rva + KBD_HOOK_OFF)
+    setup = _build_kbd_setup(cave_va + KBD_SETUP_OFF, cave_va,
+                             cave_va + KBD_HOOK_OFF, cave_rva + KBD_SETUP_OFF, KBDFIX_LOAD_RVA)
+    strs_len = max(off + len(s) for off, s in _kbd_strs())
+    if KBD_HOOK_OFF + len(hook) > KBD_SETUP_OFF:
+        raise RuntimeError('kbdfix：钩子越界')
+    if KBD_SETUP_OFF + len(setup) > KBD_STR_OFF:
+        raise RuntimeError('kbdfix：安装桩越界压字符串区')
+    if KBD_STR_OFF + strs_len > KBD_HHK:
+        raise RuntimeError('kbdfix：字符串区越界压槽位')
+    data[cave_raw + KBD_HOOK_OFF:cave_raw + KBD_HOOK_OFF + len(hook)] = hook
+    data[cave_raw + KBD_SETUP_OFF:cave_raw + KBD_SETUP_OFF + len(setup)] = setup
+    for off, s in _kbd_strs():
+        data[cave_raw + KBD_STR_OFF + off:cave_raw + KBD_STR_OFF + off + len(s)] = s
+    fo = rva_off(KBDFIX_LOAD_RVA)
+    if bytes(data[fo:fo + 8]) != KBDFIX_LOAD_PROLOG:
+        raise RuntimeError('kbdfix：load 入口序言不符 %s' % data[fo:fo + 8].hex())
+    rel = (cave_va + KBD_SETUP_OFF) - (0x400000 + KBDFIX_LOAD_RVA + 5)
+    data[fo] = 0xE9
+    struct.pack_into('<i', data, fo + 1, rel)
+    print('键盘修复层已应用: 钩子@cave+0x%X(%dB) 安装桩@cave+0x%X(%dB) load 入口挂钩'
+          % (KBD_HOOK_OFF, len(hook), KBD_SETUP_OFF, len(setup)))
+    return data
+
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 DLL_IN = os.path.join(BASE, 'input', 'first.dll')
 CSV_IN = os.path.join(BASE, 'translated.csv')
@@ -4327,6 +4646,10 @@ data = patch_ulw_hitmask(data)
 # IME 修复层（微软拼音候选/组字窗/字体；详见《窗口分析及修复.md》§9）
 if IME_ENABLE:
     data = build_ime_layer(data)
+
+# 键盘修复层（Tab 切换 / Alt+助记符；详见《窗口分析及修复.md》§11）
+if KBD_ENABLE:
+    data = patch_kbd_fix(data)
 
 os.makedirs(os.path.dirname(DLL_OUT), exist_ok=True)
 with open(DLL_OUT, 'wb') as f:

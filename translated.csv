@@ -1098,7 +1098,7 @@ Offset,Length,Type,Text
 0x801D8,143,code,"\0\s0\_qCTRL+SHIFT+F12\_q 可以恢复到默认位置。\w8\w8\1\s0角色飞到画面外的时候，就用这个。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
 0x8028C,111,code,"\0\s0\_qCTRL+SHIFT+DEL\_q 是关闭对话框。\w8\w8\1\s0这是基础操作吧。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
 0x80320,130,code,"\0\s0\_qCTRL+SHIFT+INS\_q 是 SEND Box。\w8\w8\1\s0……\w8\w8嘛，这是调试用的啦。\x\![raise,OnChoiceSelect,tutorial_hotkey]"
-0x803C4,60,code,"\0\s0那么，下次有需要的时候再来吧～。\![leave,passivemode]"
+0x803C4,60,code,"\![leave,passivemode]\0\s0那么，下次有需要的时候再来吧～。"
 0x80420,12,code,「很健谈」
 0x80438,8,code,「普通」
 0x8044C,8,code,「沉默」
