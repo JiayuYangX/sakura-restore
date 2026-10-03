@@ -23,8 +23,6 @@ first.dll：
     2. r"\\![enter,inductionmode]" 字符串长度 23 -> 0（0x79E08）
        诱导模式会让 cantalk 永远保持 false，导致后台事件走 NOTIFY
        （响应被忽略）、泡澡结束的对话不可见。
-    3. Tcpuloadform 布局两处写死高度 128 -> 64（0x46891A / 0x468AC0）：
-       信息窗只保留文字区，整窗命中即文字区命中（配合 misaki 的整层 alpha 填充）。
 
   AITXT（词库）：aitxt_translated.txt（UTF-8）-> GBK -> 加密数据块，覆盖 PE 资源
     目录中定位到的 AITXT 资源，并更新资源数据项的 Size 字段。写入前 round-trip 校验。
@@ -66,11 +64,11 @@ first.dll：
     CreateParams 的指令处（0x4352C1）挂透明桩：仅当栈帧里类名为 "TStatusBar" 时给
     Params.WindowClass.style 补 CS_HREDRAW；其余类原样通过，不碰 RegisterClassA。
 
-misaki.dll（透明窗命中区）：
-  透明窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按图层
-  alpha 做命中判定（alpha==0 穿透）；DPI 虚拟化下只有字形能命中、拖不动。
-  把 allclear 清零填充值改成 0x01（alpha=1/255，肉眼不可见但可命中），配合
-   first.dll 的信息窗高度减半 → 信息窗整窗（=文字区）可拖、时钟整窗可拖。
+first.dll 的 ULW 命中掩码（patch_ulw_hitmask）：
+  监控窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按图层 alpha
+  做鼠标命中判定（alpha==0 穿透）。100% 缩放时判定与显示一一对应；DPI 虚拟化（≠100%）
+  下系统读取图层的坐标被放大 2 倍，命中区与显示错位。修复 = 每次上屏前仅对两个监控窗
+  的 32bpp 图层把内容按 1/2 缩半写成不可见命中标记（alpha=1/255）；=100% 不做任何修改。
 
 first.dll 退出崩溃修复层（patch_exit_fix）：
   SSP 退出时模块卸载后残留的"僵尸活动"（消息派发等）会落到已卸载代码上，
@@ -100,12 +98,6 @@ PATCHES = [
     (0x719E9, bytes.fromhex('0F 85 AF 7E 00 00'), b'\x90' * 6),
     # 2. r"\![enter,inductionmode]" 字符串长度 23 -> 0
     (0x79E08, bytes.fromhex('17 00 00 00'), bytes.fromhex('00 00 00 00')),
-    # 3. Tcpuloadform 布局里写死的高度 128 -> 64（两处：VA 0x46891A / 0x468AC0，
-    #    文件偏移 0x67D1A / 0x67EC0：mov edx,0x80; call SetClientHeight）
-    #    信息窗只保留文字区：整窗=文字区 → 命中/拖动/穿透自然正确，配合 misaki
-    #    整层 alpha 填充也不会再有黑线。
-    (0x67D1A, bytes.fromhex('80 00 00 00'), bytes.fromhex('40 00 00 00')),
-    (0x67EC0, bytes.fromhex('80 00 00 00'), bytes.fromhex('40 00 00 00')),
 ]
 
 
@@ -2248,23 +2240,19 @@ def patch_aitxt(data: bytearray) -> bytearray:
     return data
 
 
-# ------------------------------------------------------------- misaki.dll（透明窗命中区）
-# 幽灵的透明窗（文字信息窗 / 模拟时钟 / 倒计时）是 WS_EX_LAYERED +
-# UpdateLayeredWindow 逐像素 alpha 窗口，图层位图由 misaki.dll 管理；系统按图层
-# alpha 做逐像素命中判定（alpha==0 穿透），DPI 虚拟化下只有字形能命中、拖不动。
-# 这里把 misaki 的 allclear 清零填充值改成 0x01（alpha=1/255，肉眼不可见但可命中）
-# → 整个窗口进入命中区。配合 first.dll 侧把信息窗窗口高度改成“只剩文字区”
-# （见 PATCHES 第 3 条），整窗命中即等于文字区命中；时钟本就整窗可拖。
-# 只改 misaki 自己 allclear 的两处行清零调用，不影响其它零填充。
+# ------------------------------------------------------------- misaki.dll（监控窗）
+# 监控窗图层由 misaki.dll 的 allclear 清零后重画；本段只保留“跨 100% 缩放刷新修复”：
+# 把 allclear 的两处行清零调用改为经本模块新段里的桩（子类化 + 门控 + DWM cloak +
+# WS_EX_LAYERED 往返刷新，详见 docs/窗口分析及修复.md §10），清零逻辑本身不变。
+# 拖动命中判定修复在 first.dll 侧（见 patch_ulw_hitmask）。
 MISAKI_ORIG_CRC32 = 0x5B172E3D
 MISAKI_ORIG_SIZE = 482816
 MISAKI_CAVE_VA = 0x465584          # 代码段尾部零填充（1148 字节，无任何引用）
 MISAKI_ZFILL_WRAP = 0x406C38       # xor ecx,ecx; call _FillChar; ret（清零助手）
-MISAKI_FILLCHAR = 0x4029C4         # Delphi _FillChar（EAX=目标, EDX=字节数, CL=值）
 MISAKI_SITE_A = 0x4622D4           # allclear 32bpp 行清零 call
 MISAKI_SITE_B = 0x462333           # allclear 24bpp 行清零 call
-MISAKI_INFO_W = 148                # 信息窗宽度（行字节 592/444）
-MISAKI_CLOCK_W = 64                # 时钟宽度（行字节 256/192）
+MISAKI_INFO_W = 148                # 信息窗图层宽度（亦作跨 100% 门控阈值）
+MISAKI_CLOCK_W = 64                # 时钟窗图层宽度（同上）
 
 # ---- 100% 边界刷新修复（misaki 侧）----
 #  系统在缩放比例跨过 100% 时会把分层表面（WS_EX_LAYERED 逐像素 alpha）的缩放
@@ -2311,8 +2299,8 @@ def _misaki_call(site_va, target_va):
 
 
 def _build_misaki_stub(cave_va, ring_va):
-    """allclear 行清零小桩：保持基线填充逻辑；前奏一次性把时钟窗 WndProc 子类化到
-    本模块新段里的空桩（纯透传，本步不改变任何行为）。"""
+    """allclear 行清零小桩：清零逻辑保持原样；前奏把两个监控窗的 WndProc 子类化到
+    本模块新段里的桩（供跨 100% 刷新修复使用），并处理 cloak 解除。"""
     code = bytearray()
     fix = []
     lab = {}
@@ -2399,31 +2387,7 @@ def _build_misaki_stub(cave_va, ring_va):
     lab['udone'] = len(code)
     emit(0x61, 0x9D)                        # popad; popfd
 
-    emit(0x50)                  # push eax（保存行指针）
-    emit(0x8D, 0x04, 0x3E)      # lea eax,[edi+esi] ; 高度
-    cmp_eax(128)
-    cj(0x74, 'size')            # je  -> 再看行字节
-    cmp_eax(64)
-    cj(0x75, 'zero')            # jne -> 其它图层原样清零
-
-    lab['size'] = len(code)
-    cmp_edx(MISAKI_INFO_W * 4)  # 信息窗
-    cj(0x74, 'one')
-    cmp_edx(MISAKI_INFO_W * 3)
-    cj(0x74, 'one')
-    cmp_edx(MISAKI_CLOCK_W * 4) # 时钟
-    cj(0x74, 'one')
-    cmp_edx(MISAKI_CLOCK_W * 3)
-    cj(0x74, 'one')
-    uj('zero')
-
-    lab['one'] = len(code)              # 填 0x01（命中区）
-    emit(0x58)                          # pop eax
-    emit(0xB1, 0x01)                    # mov cl,1
-    emit(0xE9); code.extend(struct.pack('<i', MISAKI_FILLCHAR - (cave_va + len(code) + 4)))
-
-    lab['zero'] = len(code)             # 原样清零
-    emit(0x58)                          # pop eax
+    # 行清零：直通原清零助手（命中掩码由 first.dll 侧负责）
     emit(0xE9); code.extend(struct.pack(
         '<i', MISAKI_ZFILL_WRAP - (cave_va + len(code) + 4)))
 
@@ -2637,7 +2601,6 @@ def build_misaki() -> bytes:
     with open(out_path, 'wb') as f:
         f.write(bytes(data))
     print(f'misaki.dll 写入完成 → {out_path}')
-    print(f'  allclear 行清零填充值改为 0x01（信息窗整层 / 时钟整窗，1/255 不可见）')
     print(f'  两窗各自子类化：向上穿越 100% 时 cloak + WS_EX_LAYERED 往返刷新（含 dwmapi 兜底/校准位）')
     return bytes(data)
 
@@ -2864,6 +2827,327 @@ def _exitfix_cb(cave_va: int) -> bytes:
             struct.pack_into('<i', b, pos, off)
     assert len(b) <= 0x120, len(b)
     return bytes(b)
+
+
+# ------------------------------------------------------------- first.dll（ULW 命中掩码）
+# 幽灵的透明监控窗（模拟时钟 Tanalogclockform / 文字信息窗 Tcpuloadform）是
+# WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口：系统按图层 alpha 做鼠标
+# 命中判定（alpha==0 穿透）。100% 缩放下判定与显示一一对应；DPI 虚拟化（≠100%）下
+# 系统读取图层的坐标被放大 2 倍（实测：鼠标在显示坐标 V 处读图层 V/2 处，偏移为 0），
+# 命中区与显示错位（细笔画点不中、空白处出现幽灵命中区）。本层在每次 ULW 上屏前，
+# 仅对这两个窗口的 32bpp 图层写“不可见命中掩码”（alpha=1/255）：
+#   =100%：不做任何修改（与未打补丁的原版行为一致）；
+#   ≠100%：掩码[U,·] = 内容[2U,·]（横竖各缩半，抵消系统的 2× 采样；DIB 自底向上，
+#           行号翻转；只把 alpha==0 的像素置 1，不改可见像素）。
+# 实现：4 处 ULW 调用点（VA 0x462C90/0x462CB8/0x462D2A/0x462D50，原 9 字节
+# `mov eax,[表]; mov eax,[eax]; call eax`）替换为 `call 桩` + 4×NOP。
+# 关键：被替换的操作数带 PE HIGHLOW 重定位项，必须同时从 .reloc 删除对应条目，
+# 否则加载器把 rebase 差值加到补丁字节上 → 调用乱飞（实测崩溃过）。
+ULW_SITES = (0x462C90, 0x462CB8, 0x462D2A, 0x462D50)
+ULW_SITE_ORIG = bytes.fromhex('A1A0DD4A008B00FFD0')
+ULW_TABLE = 0x4ADDA0                # 表项（运行时指向 ULW 指针槽；尾调保留两级间接）
+ULWFIX_STUB_OFF = 0x7700            # .cave：ULW 前置桩（≤0x300）
+ULWFIX_SLOT_OFF = 0x7D00            # GetCurrentObject 指针槽（惰性解析）
+ULWFIX_STDA_SLOT = 0x7D04           # SetThreadDpiAwarenessContext 指针槽
+ULWFIX_GWR_SLOT = 0x7D08            # GetWindowRect 指针槽
+ULWFIX_OLD_CTX = 0x7D0C             # 旧 DPI 上下文暂存
+ULWFIX_MOD_U32 = 0x7D20             # user32 模块句柄缓存（解析 STDA/GWR 用）
+ULWFIX_STR_GDI32 = 0x7D30           # "gdi32.dll"
+ULWFIX_STR_GCO = 0x7D40             # "GetCurrentObject"
+ULWFIX_DS_OFF = 0x7D50              # GetObjectA 输出（BITMAP，84B）
+ULWFIX_KLS_BUF = 0x7DB0             # GetClassNameA 缓冲（64B）
+ULWFIX_RECT = 0x7DF0                # GetWindowRect 输出
+ULWFIX_BITS = 0x7E00                # 工作变量：像素指针
+ULWFIX_STRIDE = 0x7E04              # 行字节
+ULWFIX_W = 0x7E08                   # 图层宽
+ULWFIX_H = 0x7E0C                   # 图层高
+ULWFIX_X = 0x7E10                   # 扫描 x
+ULWFIX_Y = 0x7E14                   # 扫描 y
+ULWFIX_ROW = 0x7E18                 # 当前行指针
+ULWFIX_PW = 0x7E1C                  # 窗口物理宽（PMv2 采样）
+ULWFIX_PH = 0x7E20                  # 窗口物理高
+ULWFIX_STR_USER32 = 0x7F00          # "user32.dll"
+ULWFIX_STR_STDA = 0x7F10            # "SetThreadDpiAwarenessContext"
+ULWFIX_STR_GWR = 0x7F40             # "GetWindowRect"
+ULWFIX_IAT_GETHMOD = 0x4B31E4       # kernel32!GetModuleHandleA（first.dll IAT）
+ULWFIX_IAT_GETPROC = 0x4B31E0       # kernel32!GetProcAddress
+ULWFIX_IAT_GETOBJ = 0x4B349C        # gdi32!GetObjectA
+
+
+def _ulwfix_stub(cave_va: int) -> bytes:
+    """ULW 前置桩：取 hdcSrc 的图层位图；仅对监控窗 32bpp 图层，在 ≠100% 缩放时写
+    命中掩码（1/255 不可见）；=100% 直通。所有间接访问都用绝对静态 VA 计算位移
+    （桩静态 VA = cave_va + ULWFIX_STUB_OFF）。"""
+    sv = cave_va + ULWFIX_STUB_OFF
+
+    def C(va):
+        return struct.pack('<i', va - (sv + 6))          # 基址 = pushad 后 call$+5 返回值
+
+    def CS(off):
+        return C(cave_va + off)
+
+    b = bytearray()
+    ji = []
+    marks = {}
+
+    def raw(x):
+        b.extend(x)
+
+    def jcc(cc, label):                                  # 近跳（0F 8x rel32）
+        b.extend(bytes([0x0F, cc])); b.extend(b'\x00' * 4)
+        ji.append((len(b) - 4, label, 4))
+
+    def jmpE(label):
+        b.extend(b'\xE9\x00\x00\x00\x00'); ji.append((len(b) - 4, label, 4))
+
+    def mark(label):
+        marks[label] = len(b)
+
+    raw(b'\x60')                                        # pushad
+    raw(b'\xE8\x00\x00\x00\x00\x5B')                    # call$+5; pop ebx
+    raw(b'\x8B\x74\x24\x34')                            # esi = hdcSrc（[esp+0x34]）
+    raw(b'\x85\xF6')
+    jcc(0x84, 'done')
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_SLOT_OFF))          # GCO 槽已解析？
+    raw(b'\x85\xC0')
+    jcc(0x85, 'have')
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_STR_GDI32)); raw(b'\x50')
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETHMOD))        # GMH("gdi32.dll")
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    raw(b'\x8B\xD0')
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_STR_GCO)); raw(b'\x50\x52')
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETPROC))        # GPA("GetCurrentObject")
+    raw(b'\x89\x83'); raw(CS(ULWFIX_SLOT_OFF))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    mark('have')
+    raw(b'\x6A\x07'); raw(b'\x56')                      # GetCurrentObject(hdcSrc, OBJ_BITMAP=7)
+    raw(b'\xFF\x93'); raw(CS(ULWFIX_SLOT_OFF))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    raw(b'\x8D\x93'); raw(CS(ULWFIX_DS_OFF))
+    raw(b'\x52'); raw(b'\x6A\x54'); raw(b'\x50')        # GetObjectA(hbmp, 84, &ds)
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETOBJ))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    raw(b'\x8D\x93'); raw(CS(ULWFIX_DS_OFF))
+    raw(b'\x0F\xB7\x42\x12'); raw(b'\x83\xF8\x20')      # bpp == 32 ?
+    jcc(0x85, 'done')
+    raw(b'\x8B\x6C\x24\x24')                            # ebp = hwnd（[esp+0x24]）
+    raw(b'\x85\xED')
+    jcc(0x84, 'done')
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_KLS_BUF))           # GetClassNameA(hwnd, buf, 64)
+    raw(b'\x6A\x40'); raw(b'\x50'); raw(b'\x55')
+    raw(b'\xFF\x93'); raw(C(0x400000 + _EXF_IAT_GCL))   # _EXF_IAT_* 是 RVA
+    raw(b'\x8D\x93'); raw(CS(ULWFIX_KLS_BUF))
+    raw(b'\x8B\x02')
+    raw(b'\x3D'); raw(struct.pack('<I', 0x616E6154))    # "Tana"
+    jcc(0x85, 'kls2')
+    raw(b'\x80\x7A\x04\x6C')                            # cmp byte [edx+4],'l'
+    jcc(0x84, 'mon')
+    mark('kls2')
+    raw(b'\x3D'); raw(struct.pack('<I', 0x75706354))    # "Tcpu"
+    jcc(0x85, 'done')
+    raw(b'\x80\x7A\x04\x6C')
+    jcc(0x85, 'done')
+    mark('mon')
+    raw(b'\x8D\x93'); raw(CS(ULWFIX_DS_OFF))            # 载入位图信息
+    raw(b'\x8B\x42\x14'); raw(b'\x89\x83'); raw(CS(ULWFIX_BITS))
+    raw(b'\x8B\x42\x0C'); raw(b'\x89\x83'); raw(CS(ULWFIX_STRIDE))
+    raw(b'\x8B\x42\x04'); raw(b'\x89\x83'); raw(CS(ULWFIX_W))
+    raw(b'\x8B\x42\x08'); raw(b'\x89\x83'); raw(CS(ULWFIX_H))
+    # —— DPI 因子采样：PMv2 下取窗口物理宽；解析失败按 100% 直通 ——
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_STDA_SLOT))
+    raw(b'\x85\xC0')
+    jcc(0x85, 'have_stda')
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_STR_USER32)); raw(b'\x50')
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETHMOD))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    raw(b'\x89\x83'); raw(CS(ULWFIX_MOD_U32))           # 缓存 user32 模块句柄
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_STR_STDA)); raw(b'\x50')
+    raw(b'\xFF\xB3'); raw(CS(ULWFIX_MOD_U32))
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETPROC))
+    raw(b'\x89\x83'); raw(CS(ULWFIX_STDA_SLOT))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_STR_GWR)); raw(b'\x50')
+    raw(b'\xFF\xB3'); raw(CS(ULWFIX_MOD_U32))
+    raw(b'\xFF\x93'); raw(C(ULWFIX_IAT_GETPROC))
+    raw(b'\x89\x83'); raw(CS(ULWFIX_GWR_SLOT))
+    raw(b'\x85\xC0')
+    jcc(0x84, 'done')
+    mark('have_stda')
+    raw(b'\x6A\xFC')                                    # push -4（PER_MONITOR_AWARE_V2）
+    raw(b'\xFF\x93'); raw(CS(ULWFIX_STDA_SLOT))
+    raw(b'\x89\x83'); raw(CS(ULWFIX_OLD_CTX))           # 保存旧上下文
+    raw(b'\x8D\x83'); raw(CS(ULWFIX_RECT)); raw(b'\x50'); raw(b'\x55')
+    raw(b'\xFF\x93'); raw(CS(ULWFIX_GWR_SLOT))          # GetWindowRect(hwnd,&rect)
+    raw(b'\xFF\xB3'); raw(CS(ULWFIX_OLD_CTX))
+    raw(b'\xFF\x93'); raw(CS(ULWFIX_STDA_SLOT))         # 恢复上下文
+    raw(b'\x8D\x93'); raw(CS(ULWFIX_RECT))
+    raw(b'\x8B\x42\x08'); raw(b'\x2B\x02')
+    raw(b'\x89\x83'); raw(CS(ULWFIX_PW))
+    raw(b'\x8B\x42\x0C'); raw(b'\x2B\x42\x04')
+    raw(b'\x89\x83'); raw(CS(ULWFIX_PH))
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_PW))
+    raw(b'\x3B\x83'); raw(CS(ULWFIX_W))
+    jcc(0x84, 'done')                                   # 100% → 直通
+    # —— ≠100%：掩码[U, ·] = 内容[2U, ·]（U=x>>1；行号缩半后翻回自底向上）——
+    raw(b'\xC7\x83'); raw(CS(ULWFIX_Y)); raw(b'\x00\x00\x00\x00')
+    mark('yloop')
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_Y))
+    raw(b'\x3B\x83'); raw(CS(ULWFIX_H))
+    jcc(0x83, 'done')
+    raw(b'\x0F\xAF\x83'); raw(CS(ULWFIX_STRIDE))
+    raw(b'\x03\x83'); raw(CS(ULWFIX_BITS))
+    raw(b'\x89\x83'); raw(CS(ULWFIX_ROW))
+    raw(b'\xC7\x83'); raw(CS(ULWFIX_X)); raw(b'\x00\x00\x00\x00')
+    mark('xloop')
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_X))
+    raw(b'\x3B\x83'); raw(CS(ULWFIX_W))
+    jcc(0x83, 'ynext')
+    raw(b'\x8B\xC8')                                    # ecx = x
+    raw(b'\xC1\xE1\x02')                                # shl ecx,2
+    raw(b'\x03\x8B'); raw(CS(ULWFIX_ROW))               # add ecx,[row]
+    raw(b'\x8B\x11')                                    # edx = [ecx]（像素原值）
+    raw(b'\xF7\xC2\xFF\xFF\xFF\x00')                    # test edx,0x00FFFFFF
+    jcc(0x85, 'content')
+    raw(b'\x8A\x51\x03')                                # mov dl,[ecx+3]
+    raw(b'\x80\xFA\x02')                                # cmp dl,2
+    jcc(0x82, 'next_x')
+    mark('content')
+    raw(b'\x8B\x83'); raw(CS(ULWFIX_X))
+    raw(b'\xD1\xE8')                                    # shr eax,1 → U
+    raw(b'\x8B\x93'); raw(CS(ULWFIX_H))                 # edx = H−1−y
+    raw(b'\x4A')
+    raw(b'\x2B\x93'); raw(CS(ULWFIX_Y))
+    raw(b'\xD1\xEA')                                    # shr edx,1 → t
+    raw(b'\x8B\x8B'); raw(CS(ULWFIX_H))                 # ecx = H−1−t
+    raw(b'\x49')
+    raw(b'\x2B\xCA')
+    raw(b'\x0F\xAF\x8B'); raw(CS(ULWFIX_STRIDE))        # imul ecx, stride
+    raw(b'\x03\x8B'); raw(CS(ULWFIX_BITS))              # add ecx, bits
+    raw(b'\xC1\xE0\x02')                                # shl eax,2（U*4）
+    raw(b'\x03\xC1')                                    # add eax, ecx
+    raw(b'\x80\x78\x03\x00')                            # cmp byte [eax+3],0
+    jcc(0x85, 'next_x')
+    raw(b'\xC6\x40\x03\x01')                            # mov byte [eax+3],1
+    mark('next_x')
+    raw(b'\xFF\x83'); raw(CS(ULWFIX_X))
+    jmpE('xloop')
+    mark('ynext')
+    raw(b'\xFF\x83'); raw(CS(ULWFIX_Y))
+    jmpE('yloop')
+    mark('done')
+    raw(b'\x61')                                        # popad（EBX 被恢复，旧基址失效）
+    P = len(b)
+    raw(b'\xE8\x00\x00\x00\x00\x5B')                    # 重新锚定
+    raw(b'\x8B\x83'); raw(struct.pack('<i', ULW_TABLE - (sv + P + 5)))
+    raw(b'\x8B\x00')                                    # 表项 → 槽
+    raw(b'\xFF\xE0')                                    # jmp eax（尾调真实 ULW）
+    for pos, label, size in ji:
+        off = marks[label] - (pos + size)
+        if size == 1:
+            assert -128 <= off <= 127, (label, off)
+            b[pos] = off & 0xFF
+        else:
+            struct.pack_into('<i', b, pos, off)
+    assert len(b) <= 0x300, len(b)
+    return bytes(b)
+
+
+def patch_ulw_hitmask(data: bytearray) -> bytearray:
+    """写入桩/数据、挂钩 4 个 ULW 调用点，并删除站点操作数的 PE 重定位项。"""
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt = e + 24
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('ulwfix：未找到 .cave 段')
+    cave_va = 0x400000 + cave_rva
+
+    def rva_off(rva):
+        for i in range(nsec):
+            off = sec + 40 * i
+            va = _u32(data, off + 12)
+            vsz = _u32(data, off + 8)
+            if va <= rva < va + vsz:
+                return _u32(data, off + 20) + (rva - va)
+        raise RuntimeError('ulwfix：RVA 0x%X 不在任何节' % rva)
+
+    if any(data[cave_raw + ULWFIX_STUB_OFF:cave_raw + ULWFIX_STUB_OFF + 0x300]):
+        raise RuntimeError('ulwfix：桩区非零')
+    if any(data[cave_raw + ULWFIX_SLOT_OFF:cave_raw + 0x7F60]):
+        raise RuntimeError('ulwfix：数据区非零')
+
+    stub = _ulwfix_stub(cave_va)
+    data[cave_raw + ULWFIX_STUB_OFF:cave_raw + ULWFIX_STUB_OFF + len(stub)] = stub
+    for off, s in ((ULWFIX_STR_GDI32, b'gdi32.dll\x00'),
+                   (ULWFIX_STR_GCO, b'GetCurrentObject\x00'),
+                   (ULWFIX_STR_USER32, b'user32.dll\x00'),
+                   (ULWFIX_STR_STDA, b'SetThreadDpiAwarenessContext\x00'),
+                   (ULWFIX_STR_GWR, b'GetWindowRect\x00')):
+        data[cave_raw + off:cave_raw + off + len(s)] = s
+
+    # 站点操作数带 HIGHLOW 重定位项：补丁取代后必须删除，否则加载器会把 rebase
+    # 差值加到补丁字节上（rel32 加歪 → 调用乱飞）。重建 .reloc 并更新目录大小。
+    site_rvas = [s - 0x400000 for s in ULW_SITES]
+    rel_raw = rel_rsize = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 7]) == b'.reloc\x00':
+            rel_rsize = _u32(data, off + 16)
+            rel_raw = _u32(data, off + 20)
+    if rel_raw is None:
+        raise RuntimeError('ulwfix：未找到 .reloc 段')
+    blk = rel_raw
+    end = rel_raw + rel_rsize
+    out = bytearray()
+    removed = 0
+    while blk + 8 <= end:
+        page = _u32(data, blk)
+        bsize = _u32(data, blk + 4)
+        if page == 0 or bsize < 8:
+            break
+        keep = []
+        for k in range((bsize - 8) // 2):
+            w = _u16(data, blk + 8 + 2 * k)
+            r = page + (w & 0xFFF)
+            if any(s <= r < s + 9 for s in site_rvas):
+                removed += 1
+            else:
+                keep.append(w)
+        if keep:
+            out += struct.pack('<II', page, 8 + 2 * len(keep))
+            for w in keep:
+                out += struct.pack('<H', w)
+        blk += bsize
+    if removed != len(site_rvas):
+        raise RuntimeError('ulwfix：预期移除 %d 条重定位，实际 %d' % (len(site_rvas), removed))
+    data[rel_raw:rel_raw + len(out)] = out
+    data[rel_raw + len(out):rel_raw + rel_rsize] = b'\x00' * (rel_rsize - len(out))
+    struct.pack_into('<I', data, opt + 96 + 5 * 8 + 4, len(out))
+
+    for site_va in ULW_SITES:
+        off = rva_off(site_va - 0x400000)
+        if bytes(data[off:off + 9]) != ULW_SITE_ORIG:
+            raise RuntimeError('ulwfix：0x%X 原始字节不符 %s' % (site_va, data[off:off + 9].hex()))
+        rel = (cave_va + ULWFIX_STUB_OFF) - (site_va + 5)
+        data[off] = 0xE8
+        struct.pack_into('<i', data, off + 1, rel)
+        data[off + 5:off + 9] = b'\x90' * 4
+    print('ULW 命中掩码层已应用：%d 处挂钩 @ .cave+0x%X；移除站点重定位 %d 条' % (
+        len(ULW_SITES), ULWFIX_STUB_OFF, removed))
+    return data
 
 
 def patch_exit_fix(data: bytearray) -> bytearray:
@@ -4193,6 +4477,9 @@ data = patch_exit_fix(data)
 
 data = patch_ctx_return_on_detach(data)
 
+# ULW 命中掩码层：≠100% 缩放的拖动命中修复（=100% 不做任何修改）
+data = patch_ulw_hitmask(data)
+
 # IME 修复层（微软拼音候选/组字窗/字体；详见 docs/输入法修复调查记录_进行中.md）
 if IME_ENABLE:
     data = build_ime_layer(data)
@@ -4203,7 +4490,7 @@ with open(DLL_OUT, 'wb') as f:
 
 print(f'first.dll 写入完成 → {DLL_OUT}')
 
-# ---- misaki.dll（透明窗命中区：整层 alpha=1，1/255 不可见但可命中）----
+# ---- misaki.dll（监控窗跨 100% 刷新修复）----
 misaki_data = build_misaki()
 
 # ---- 部署：命令行第一个参数 = ghost master 目录（或其下任一 dll 文件路径）----
