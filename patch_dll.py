@@ -52,6 +52,8 @@ first.dll：
       窗口交给系统按屏幕缩放（含 GDI 自绘文字）；请求之外 SSP 自身界面不受影响。
     - 拖动修复：6 处 FormMouseMove 里 SC_DRAGMOVE 的 SendMessageA 调用改为经过
       .cave 包装桩（拖动模态循环期间线程 GDISCALED）。
+    - 视力窗（Teyesightform）DFM 补 Scaled=False：它是唯一漏写该属性的窗体，
+      否则 VCL 载入缩放与 GDISCALED 包装叠加成双重放大（见《窗口分析及修复.md》§4.4）。
     - 输入法修复（.cave IME 段，随 load 安装/unload 还原；两门控：MATERIA 等 unaware 宿主
       安装时自动整体 no-op，运行时仅 GDISCALED(96dpi) 窗口生效；动态 DPI 因子三重修复）：
       ① 候选框空态位置（msctf 空态分支内 prc 以窗口原点为中心 ×f）+ 感知修正；
@@ -169,6 +171,86 @@ def patch_dfm_charset(data: bytearray) -> bytearray:
     return data
 
 
+def patch_dfm_teyesight_scaled(data: bytearray) -> bytearray:
+    """给 Teyesightform（视力 C 图窗）的 DFM 补上 `Scaled=False`。
+
+    背景：19 个窗体的 DFM 里只有它没写 Scaled（= 默认 True）。VCL 载入时会按
+    `Screen.PixelsPerInch/96` 把这个窗体整体缩放一次；我们的 GDISCALED 包装
+    又会把窗口再缩放一次 → 视力窗比其它窗大 1.5 倍（字号只吃一次 GDISCALED，
+    比例失真）。补上 Scaled=False 后与其余 18 个窗体一致（MATERIA 下本就
+    96dpi、无行为变化）。
+
+    实现：定位 Teyesightform 的 DFM 资源数据项，把 `Scaled=False` 插到属性表
+    开头；新 DFM **追加到 .rsrc 节末尾**（不搬动其它内容），仅更新该资源项的
+    DataRVA/Size 与 .rsrc 的 RawSize/VirtualSize。追加块 ≤0x800，
+    保证 .cave 的 RVA 仍为 0xE2000（exitfix 有断言）。
+    """
+    e = _u32(data, 0x3C)
+    opt = e + 24
+    nsec = _u16(data, e + 6)
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    file_align = _u32(data, opt + 36) or 0x200
+
+    rsrc = None
+    for i in range(nsec):
+        o = sec + 40 * i
+        if data[o:o + 5] == b'.rsrc':
+            vs, va, rsz, raw = struct.unpack_from('<IIII', data, o + 8)
+            rsrc = (o, raw, rsz, va, vs)
+    if rsrc is None:
+        raise RuntimeError('Teyesightform DFM：找不到 .rsrc 节')
+    o_sec, raw, rsz, va, vs = rsrc
+    res_rva = _u32(data, opt + 96 + 2 * 8)          # 资源目录 RVA
+    base = raw + (res_rva - va)                     # 资源目录文件偏移（本 DLL 中=节首）
+
+    def entries(dir_off):
+        total = _u16(data, base + dir_off + 12) + _u16(data, base + dir_off + 14)
+        for i in range(total):
+            ent = base + dir_off + 16 + 8 * i
+            yield _u32(data, ent), _u32(data, ent + 4)
+
+    found = None
+    for t_name, t_sub in entries(0):
+        if t_name != 10 or not (t_sub & 0x80000000):    # RT_RCDATA
+            continue
+        for _i_name, i_sub in entries(t_sub & 0x7FFFFFFF):
+            if not (i_sub & 0x80000000):
+                continue
+            for _l_name, l_sub in entries(i_sub & 0x7FFFFFFF):
+                drva, size = _u32(data, base + l_sub), _u32(data, base + l_sub + 4)
+                off = raw + (drva - va)
+                if data[off:off + 4] == b'TPF0':
+                    n = data[off + 4]
+                    if data[off + 5:off + 5 + n] == b'Teyesightform':
+                        found = (off, size, base + l_sub + 4)
+    if not found:
+        raise RuntimeError('Teyesightform DFM：未找到资源数据项')
+    off, size, sz_field = found
+    dfm = bytes(data[off:off + size])
+    if b'Scaled' in dfm:
+        raise RuntimeError('Teyesightform DFM：已含 Scaled（重复应用？）')
+
+    p = 4
+    p += 1 + dfm[p]                                  # 跳过类名 ShortString
+    p += 1 + dfm[p]                                  # 跳过实例名 ShortString
+    new = dfm[:p] + b'\x06Scaled\x08' + dfm[p:]      # Scaled = False（vaFalse，无载荷）
+    pad = (-len(new)) % file_align
+    alloc = len(new) + pad
+    if rsz + alloc > 0xE2000 - va:
+        raise RuntimeError('Teyesightform DFM：追加块过大，会顶掉 .cave 的 RVA')
+    new_raw = len(data)                              # 原始文件里 = .rsrc raw 末尾
+    data.extend(new)
+    data.extend(b'\x00' * pad)
+    struct.pack_into('<I', data, sz_field - 4, va + (new_raw - raw))   # DataRVA
+    struct.pack_into('<I', data, sz_field, len(new))                   # Size
+    struct.pack_into('<I', data, o_sec + 16, rsz + alloc)              # RawSize
+    struct.pack_into('<I', data, o_sec + 8, vs + alloc)                # VirtualSize
+    print(f'Teyesightform DFM 已补 Scaled=False: 资源 {size} -> {len(new)} 字节 '
+          f'(新 RVA 0x{va + (new_raw - raw):X})')
+    return data
+
+
 # ------------------------------------------------- 链接化补丁（海原雄山）
 
 LINKIFY_CALL_OFF = 0xA9E37          # 最后一段（木野さん）的 call 0x4AA838
@@ -266,7 +348,7 @@ URL_RESP_PREFIX = rb'\C\![open,browser,'
 #   0x1F8-0x3FF 链接桩2 响应缓冲（string 头 + 数据，链接文档）
 #   0x380-0x3FF 空闲（原"视力未弹框双击小段"已随视力全吞方案删除）
 #   0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
-#   0x940 标志组(FLAG/PENDING/GAMELEFT/SWALLOW/EYEBUSY；0x944-0x947 原 MARK 已释放)
+#   0x940 标志组(SEARCH/PENDING/GAMELEFT/EYEBUSY；0x944-0x947 原 MARK、0x94D 原 SWALLOW 已释放)
 #   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
 #   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100，
 #          数据可达 0x1F7B，故 0x1F7C 之后才空)
@@ -281,7 +363,7 @@ CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + �
 CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
 SEARCH_OFF = 0x940                 # 搜索框标志（dword：1=搜索输入框开着）
 PENDING_OFF = 0x948                # 退出待处理字节（1=本次退出响应前置 CLOSE_CMD）
-GAMELEFT_OFF = 0x94C               # 游戏已退出字节（1=吞掉残留游戏事件响应）
+GAMELEFT_OFF = 0x94C               # 已退出游戏（Leave 置 1 / Enter 清 0；放行打字框 CloseQuery 用）
 EYEBUSY_OFF = 0x94E                # 视力保护窗口（OnEy* 置 1；双击非 passive 解除）
 CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x960 / 数据@0x964）
 CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
@@ -422,14 +504,12 @@ def _build_resp_monitor_stub(rva):
            不碰 EYEBUSY（视力保护窗口延续到双击非 passive 分支才解除）。
          - OnGo*（搜索提交）：清 SEARCH。
          - OnQu* / OnTy*：Leave → PENDING+GAMELEFT+关窗体（见 .setpend）；
-           Enter → 清 GAMELEFT；其余（进度事件）→ 见 GAMELEFT。
+           Enter → 清 GAMELEFT；其余（进度事件）→ 放行（不打断）。
          - OnEy*（视力）：EYEBUSY=1（保护窗口开始；反馈期也保持，防双击打断
            leave,passivemode）。
 
        【固定动作】
          - PENDING：把 CLOSE_CMD 前置到本次响应（仅一次，关普通输入框）；
-         - GAMELEFT+SWALLOW：游戏已退出后，游戏自己的进度事件（提交/下一题/
-           超时）响应整条清空（→204），断掉游戏链；Enter 时清 GAMELEFT；
          - 缓存扫描：响应含 \\![*]\\q[ → 整条复制到菜单缓存（供双击重放）；
          - 输入框扫描：响应含 \\![open,inputbox,OnGoogle → SEARCH=1；
          - 最后复刻被覆盖的 cmp/jne，跳回 0x47A3B1（响应非空）/0x47A39F（空）。
@@ -529,36 +609,28 @@ def _build_resp_monitor_stub(rva):
     label('chkey')
     b += b'\xC6\x83' + struct.pack('<i', eyebusy) + b'\x01'  # EYEBUSY=1
     jmp32('after')
-    # .chkq：OnQuiz* 分流（Leave→置位；Enter→清 GAMELEFT；其余→.gamem）
+    # .chkq：OnQuiz* 分流（Leave→置位+关窗；Enter→清 GAMELEFT；其余→直接放行）
     label('chkq')
     b += b'\x81\x7E\x04\x69\x7A\x4C\x65'                # cmp [esi+4],'izLe'（OnQuizLeave）
     jcc32(0x0F, 0x84, 'setpend')                          # je .setpend（距离远，rel32）
     b += b'\x81\x7E\x04\x69\x7A\x45\x6E'                # cmp [esi+4],'izEn'（OnQuizEnter）
     jcc32(0x0F, 0x84, 'clrgl')                            # je .clrgl（距离远，rel32）（清 GAMELEFT）
-    jmp32('gamem')                                      # 其余 OnQuiz* → .gamem
+    jmp32('after')                                      # 其余 OnQuiz*（进度事件）→ 放行
     # .chkt：OnTypinggame* 分流
     label('chkt')
     b += b'\x81\x7E\x0C\x4C\x65\x61\x76'                # cmp [esi+12],'Leav'（OnTypinggameLeave）
     jcc32(0x0F, 0x84, 'setpend')                          # je .setpend（距离远，rel32）
     b += b'\x81\x7E\x0C\x45\x6E\x74\x65'                # cmp [esi+12],'Ente'（OnTypinggameEnter）
     jcc32(0x0F, 0x84, 'clrgl')                          # je .clrgl（距离远，rel32）
-    jmp32('gamem')                                      # 其余 OnTypinggame* → .gamem
-    # .gamem：游戏已退出（GAMELEFT）期间，游戏自己的事件（进度/下一题/超时等）
-    #         继续跑的话会不断出新题、生成新输入框——本次响应标记为待吞
-    label('gamem')
-    b += b'\x80\xBB' + struct.pack('<i', pend + 4) + b'\x00'  # cmp byte [ebx+gameleft],0
-    jcc32(0x0F, 0x84, 'after')                          # je .after（没退出过）
-    b += b'\xC6\x83' + struct.pack('<i', pend + 5) + b'\x01'  # mov byte [ebx+swallow],1
-    jmp32('after')
-    # .setpend：置 PENDING + GAMELEFT
-
+    jmp32('after')                                      # 其余 OnTypinggame*（进度事件）→ 放行
+    # .setpend：置 PENDING + GAMELEFT，并立即关游戏窗体
     label('setpend')
     b += b'\x8D\x93' + struct.pack('<i', pend)          # lea edx,[ebx+pending]
     b += b'\xC6\x02\x01'                                # mov byte [edx],1（PENDING）
     b += b'\xC6\x42\x04\x01'                            # mov byte [edx+4],1（GAMELEFT）
-    # 立即关游戏窗体：辅助桩按类名找 Ttypinggameform/Teyesightform/Tcountdownform 并投递
-    # WM_CLOSE（异步）。打字框的 CloseQuery 由 .cave+0x10D0 的桩在 GAMELEFT
-    # 时放行；视力窗本来就无拦截。全程无键盘消息，故没有编辑框回车提示音。
+    # 辅助桩按类名找 Ttypinggameform/Teyesightform/Tcountdownform 并投递
+    # WM_CLOSE（异步）；打字框的 CloseQuery 由 .cave+0x10D0 的桩在 GAMELEFT
+    # 时放行，视力窗本来就无拦截。全程无键盘消息，无编辑框回车提示音。
     call_abs(rva - 0x200)                               # 辅助桩在 cave+0x400（stubA 起点-0x200）
     jmp32('after')
     # .clrgl：清 GAMELEFT（回到游戏）
@@ -573,11 +645,11 @@ def _build_resp_monitor_stub(rva):
     b += b'\x83\xC4\x08'                                # add esp,8
     # --- PENDING：退出事件时给响应前置收尾命令（仅此一次）---
     b += b'\x80\xBB' + struct.pack('<i', pend) + b'\x00'  # cmp byte [ebx+pending],0
-    jcc8(0x74, 'swallow')                               # je .swallow（无事可做）
+    jcc8(0x74, 'scan')                                  # je .scan（无事可做）
     b += b'\xC6\x83' + struct.pack('<i', pend) + b'\x00'  # mov byte [ebx+pending],0
     b += b'\x8B\x75\xE4'                                # mov esi,[ebp-0x1c]（响应）
     b += b'\x85\xF6'                                    # test esi,esi
-    jcc8(0x74, 'swallow')                               # jz .swallow
+    jcc8(0x74, 'scan')                                  # jz .scan
     b += b'\x8B\x4E\xFC'                                # mov ecx,[esi-4]（响应长度）
     b += b'\x81\xF9\x00\x0E\x00\x00'                    # cmp ecx,0xE00
     jcc8(0x76, 'oklen')                                 # jbe .oklen
@@ -597,14 +669,6 @@ def _build_resp_monitor_stub(rva):
     b += b'\xF3\xA4'                                    # rep movsb（再写原响应）
     b += b'\x8D\x83' + struct.pack('<i', PBUF_DATA_OFF - (CAVE_A_OFF + 0x0B))  # lea eax,[ebx+pbufdata]
     b += b'\x89\x45\xE4'                                # mov [ebp-0x1c],eax（替换响应）
-    # --- 游戏遗留：吞掉本次响应（GAMELEFT 期间游戏自己的事件，见 .gamem）---
-    label('swallow')
-    b += b'\x80\xBB' + struct.pack('<i', pend + 5) + b'\x00'  # cmp byte [ebx+swallow],0
-    jcc8(0x74, 'scan')                                  # je .scan（本次响应正常处理）
-    b += b'\xC6\x83' + struct.pack('<i', pend + 5) + b'\x00'  # mov byte [ebx+swallow],0
-    b += b'\x8D\x45\xE4'                                # lea eax,[ebp-0x1c]
-    call_abs(0x403BC0)                                  # call LStrClr（清响应 → 204）
-    jmp32('done')                                       # 跳过缓存/标志扫描
     # --- 缓存扫描：\![*]\q[ → 复制整段响应到菜单缓存（cave+CACHE_OFF）---
     label('scan')
     b += b'\x8B\x75\xE4'                                # mov esi,[ebp-0x1c]
@@ -702,7 +766,7 @@ def _build_resp_monitor_stub(rva):
             struct.pack_into('<b', b, pos, v)
         else:
             struct.pack_into('<i', b, pos, target - (pos + 4))
-    assert len(b) == 0x296, hex(len(b))
+    assert len(b) == 0x260, hex(len(b))
     return bytes(b)
 
 
@@ -4683,6 +4747,8 @@ print('兼容补丁已应用: NOTIFY 分发 (0x719E9) + 诱导模式字符串清
 # 必须在文本翻译写入之后再移位（翻译随 DFM 区块一起平移，结构保持自洽）
 data = patch_dfm_charset(data)
 print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
+
+data = patch_dfm_teyesight_scaled(data)
 
 data = patch_extra_link(data)
 
