@@ -7,14 +7,13 @@ first.dll 会被复制过去。
 first.dll：
 
   文本翻译（CSV）：
-    Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font。
+    Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font|font1。
     - code：off-4 处为 4 字节小端长度，写入后更新长度并清零剩余
     - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
       （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
     - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
-    - font：无长度前缀，用 \x00 补齐
-    - pchar：无长度前缀的 PChar 字面量（前面不是字符串头，禁写 off-4），
-      只写内容+NUL，容量 = 原长+3
+    - font：无长度前缀（裸字面量），用 \x00 补齐
+    - font1：ShortString 常量（off-1 处为 1 字节长度），写入后更新长度并清零剩余
 
   兼容补丁（写入前逐字节校验原值）：
     1. NOTIFY -> 按 GET 分发（把 0x719E9 处的 jne 填成 NOP）
@@ -4579,18 +4578,16 @@ for row in rows:
         ok += 1
         continue
 
-    if typ == 'pchar':
-        # 无长度头的 PChar 字面量（前面不是字符串头！不能写 off-4）：
-        # 只写内容+NUL，容量 = 原长 + 3（原字面量后的 3 个补零字节须存在）。
-        cap = length + 3
-        if data[off + length : off + cap] != b'\x00' * 3:
-            print(f'PChar尾部非零: off=0x{off:X} text={repr(text)}')
+    if typ == 'font1':
+        # 短字符串（ShortString）常量：off-1 处为 1 字节长度；
+        # 写入后更新长度并清零剩余（如 0x27ADD 的 "MS P Gothic" 默认字体名）。
+        if len(raw) > length:
+            print(f'短串超长: off=0x{off:X} len={length} 新={len(raw)} {enc} text={repr(text)}')
             skip += 1; continue
-        if len(raw) + 1 > cap:
-            print(f'PChar超长: off=0x{off:X} 容量={cap} 新={len(raw)} text={repr(text)}')
-            skip += 1; continue
+        data[off - 1] = len(raw)
         data[off : off + len(raw)] = raw
-        data[off + len(raw) : off + cap] = b'\x00' * (cap - len(raw))
+        if length > len(raw):
+            data[off + len(raw) : off + length] = b'\x00' * (length - len(raw))
         ok += 1
         continue
 

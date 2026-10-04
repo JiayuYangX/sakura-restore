@@ -3,6 +3,7 @@
 标记条目（FF FF FF FF 头）→ CODE 段。
 DFM 条目（TPF0 资源字符串）→ .rsrc 段。
 问答答案常量（反转的 hex-SJIS）→ answer 段。
+字体名条目（"ＭＳ Ｐゴシック" / "Arial" 字面量）→ font（无长度头）/ font1（1 字节长度头）。
 """
 import struct, csv, os
 
@@ -14,6 +15,9 @@ MANUAL_OFFSETS = [
     0x6F57C,  # URL：Geocities -> CompJapan Wikipedia
     0x7E020,  # URL：搜索第 1 处：Google -> Bing
     0x7E05C,  # URL：搜索第 2 处
+    0x66A08,  # 字体名 "Arial"：模拟时钟（带 FFFF 头，纯 ASCII 会被日文条件过滤）
+    0x66AE4,  # 字体名 "Arial"：模拟时钟第二份
+    0x67F60,  # 字体名 "Arial"：文字信息窗某一项
 ]
 
 def decode_answer(raw):
@@ -136,21 +140,26 @@ all_rows = extract_marker_strings(data, code_start, code_end, force_offsets=set(
 dfm_rows = extract_dfm_strings(data)
 all_rows += [(off, slen, typ, text) for off, slen, typ, text in dfm_rows]
 
-# 3. 追加 MS P Gothic 字体名条目（.rsrc 与 CODE 中全部）
-# 跳过已被 DFM 提取覆盖的偏移，避免重复
+# 3. 追加字体名条目（.rsrc 与 CODE 中全部）：扫描 "ＭＳ Ｐゴシック" 与 "Arial"，
+#    按紧邻字节分类——前一字节 == 文本长度 → font1（ShortString，带 1 字节长度头）；
+#    否则 → font（无长度头的裸字面量）。跳过已被 DFM/标记提取覆盖的偏移，避免重复。
+FONT_PATTERNS = [
+    (b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e', 'ＭＳ Ｐゴシック'),
+    (b'Arial', 'Arial'),
+]
 existing_offsets = {off for off, _, _, _ in all_rows}
-font_pat = b'\x82\x6c\x82\x72\x20\x82\x6f\x83\x53\x83\x56\x83\x62\x83\x4e'
 font_rows = []
-pos = 0
-while True:
-    i = data.find(font_pat, pos)
-    if i == -1:
-        break
-    if i not in existing_offsets:
-        raw = data[i:i+15]
-        text = raw.decode('shift_jis', errors='replace')
-        font_rows.append((i, 15, 'font', text))
-    pos = i + 1
+for font_pat, font_text in FONT_PATTERNS:
+    pos = 0
+    while True:
+        i = data.find(font_pat, pos)
+        if i == -1:
+            break
+        if i > 0 and i not in existing_offsets:
+            # 短串常量的长度字节紧贴在文本之前且等于文本长；否则视为裸字面量
+            typ = 'font1' if data[i - 1] == len(font_pat) else 'font'
+            font_rows.append((i, len(font_pat), typ, font_text))
+        pos = i + 1
 all_rows += font_rows
 
 # 写出 CSV
@@ -162,6 +171,8 @@ with open(CSV_OUT, 'w', encoding='utf-8', newline='') as f:
         w.writerow([f'0x{off:X}', length, typ, text])
 
 answer_count = sum(1 for r in all_rows if r[2] == 'answer')
+font1_count = sum(1 for r in font_rows if r[2] == 'font1')
 marker_count = len(all_rows) - len(dfm_rows) - len(font_rows) - answer_count
 print(f'导出 {len(all_rows)} 条 → {CSV_OUT}')
-print(f'  标记: {marker_count}  答案: {answer_count}  DFM: {len(dfm_rows)}  字体: {len(font_rows)}')
+print(f'  标记: {marker_count}  答案: {answer_count}  DFM: {len(dfm_rows)}'
+      f'  字体: {len(font_rows)}（其中 font1: {font1_count}）')
