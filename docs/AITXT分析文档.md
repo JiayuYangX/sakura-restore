@@ -166,13 +166,10 @@ load()（0xA9774）
 ### 7.1 流程
 
 ```text
-aitxt_extract.csv / aitxt_translated.csv   ← 译文表（源头，2,107 行）
-        │  build_from_csv.py
+aitxt_translated.txt（UTF-8 译文，4,846 行，与提取稿行对齐；唯一源头）
+        │  patch_dll.py（aitxt_encrypt：GBK 编码 → 整块反转 → MT19937 密钥流异或）
         ▼
-aitxt_translated.txt（UTF-8，审查/对照）＋ GBK 文本（供写回）
-        │  patch_dll.py
-        ▼
-output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
+output/first.dll   资源本体重加密写回 + 字符串汉化 + 兼容补丁
 ```
 
 ### 7.2 脚本一览
@@ -180,11 +177,11 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
 | 脚本 | 作用 | 输入 → 输出 |
 |---|---|---|
 | `extract_aitxt.py` | 零参数，从 `input/first.dll` 提取解密 AITXT | → `aitxt_extract.txt`（UTF-8，日文） |
-| `build_from_csv.py` | 从译文 CSV 生成资源文本（不含任何修改规则） | CSV → `aitxt_translated.txt` + GBK 版 |
-| `fixes_common.py` | 5 条资源里存在、CSV 里没有的补充行 | 被测脚本引用 |
-| `patch_dll.py` | 全量补丁：字符串（translated.csv）+ 兼容补丁 + AITXT | `output/first.dll`（可带参数自动复制到部署路径） |
-| `aitxt_crypto.py` | 旧辅助：dump / build / verify（硬编码偏移版，保留备查） | — |
+| `patch_dll.py` | 全量补丁：AITXT 重加密写回 + 字符串（translated.csv）+ 兼容补丁 | `output/first.dll`（可带参数自动复制到部署路径） |
 | `extract2csv.py` | 注意：这是 **first.dll 字符串**提取（另一条汉化线，与 AITXT 无关） | → `extract.csv` |
+
+（旧辅助脚本 `build_from_csv.py` / `fixes_common.py` / `aitxt_crypto.py` 为早期 CSV 流水线遗留，
+已删除；补充行与全部译文现直接维护在 `aitxt_translated.txt`。）
 
 ### 7.3 尺寸与编码约束
 
@@ -199,7 +196,7 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
 1. 只翻译第 1、3 行；第 2 行的 `\...` 标记原样保留
 2. `=别名` 的目标必须与对应词条译文一致（§4.4）
 3. `%ms`/`%mh` 三条按原样保留（§9）
-4. CSV 是唯一源头；`aitxt_translated.txt` 由 CSV 生成，不要只改 txt（会被下次生成覆盖）
+4. `aitxt_translated.txt` 是唯一源头（直接维护该文件；旧中间 CSV 流水线已废弃删除）
 
 ### 7.5 验证
 
@@ -210,7 +207,7 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
 
 ## 8. 旧内存提取方法与 CSV 来源（历史）
 
-> 现 CSV（`aitxt_extract.csv` / `aitxt_translated.csv`）骨架来自早期的**运行时内存扫描**，本版保留记录供追溯。
+> 现行译文表（`aitxt_translated.txt`）的骨架来自早期的**运行时内存扫描**，本记录供追溯。
 
 - 方法：在运行中的 SSP/MATERIA 进程里搜索特征签名（如 `\ms,\female` 条目的头部
   `1A 00 00 00 02 00 00 00 0B 00 00 00`），按 `AllocationBase` 归类命中，ASLR 下用相对偏移保证稳定
@@ -222,7 +219,7 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
   （覆盖：词条 1,609/1,615、关联词 441；缺失行由 §9 补充）
 - 早期内存样本中出现的约 90 条 GBK 中文，来自当时运行中的替换（makoto / 字符串补丁），
   **资源本体始终是纯 SJIS**，不含中文
-- 该内存提取法已被资源级提取（`extract_aitxt.py`）取代；CSV 现仅作为译文表保留
+- 该内存提取法已被资源级提取（`extract_aitxt.py`）取代；旧 CSV 译表已并入 `aitxt_translated.txt`（CSV 文件已删除）
 
 ---
 
@@ -233,7 +230,7 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
 | `%ms`×2、`%mh`×1 | 词库类型行应为 `\`；这类条目不会被查询命中（休眠） | 判定为笔误；要利用这 3 个词就改成 `\ms` / `\mh`（バイソン将軍、キャプテンサワダ、NERV） |
 | 悬空别名 | `=ケルベロス`（ケロちゃん）、`=2ch`（2ちゃん）在原库就无目标词条 | 保留原样，或补词条 |
 | 5 个保留词条 | `SYNTAX ERROR`、`水爆ヲィコラ`、`NumberFormatException`、`NullPointerException`、`APTX4869` | 有意不译 |
-| 5 条补充行 | 资源行 41 / 146 / 150 / 623 / 661 不在 CSV 中 | 由 `fixes_common.py` 维护 |
+| 5 条补充行 | 资源行 41 / 146 / 150 / 623 / 661 | 已随全部译文并入 `aitxt_translated.txt` |
 | 增大不支持 | 译文超槽位需 PE 手术 | 需时再实现 |
 | `outer` 语义 | 运行时记录的类别字段含义未定 | 需要时进一步逆向 |
 | SSP 不触发 | 默认配置下 GET Word 通道休眠，译文无可见效果 | 保留为老基座/兼容模式可用与数据完整 |
@@ -264,20 +261,16 @@ output/first.dll   AITXT 加密写回 + 字符串汉化 + 兼容补丁
 
 ```text
 python extract_aitxt.py                     # input/first.dll → aitxt_extract.txt（日文）
-python build_from_csv.py                    # CSV → aitxt_translated.txt（中文，UTF-8）
-python patch_dll.py                         # 全量补丁 → output/first.dll
+python patch_dll.py                         # 全量补丁 → output/first.dll（含 AITXT 重加密写回）
 python patch_dll.py "C:\...\SSP\ghost\first\ghost\master\first.dll"   # 构建并复制部署
-python aitxt_crypto.py verify               # （旧工具）round-trip 自检
 ```
 
 ### C. 文件对照
 
 | 文件 | 说明 |
 |---|---|
-| `aitxt_extract.csv` / `aitxt_translated.csv` | 词库译文表（日/中，2,107 行，行对齐） |
-| `aitxt_extract.txt` / `aitxt_translated.txt` | 资源全文（UTF-8，4,846 行，可 diff 对照） |
+| `aitxt_extract.txt` / `aitxt_translated.txt` | 资源全文（UTF-8，4,846 行，日/中，行对齐；后者即译文源头） |
 | `translated.csv` | **first.dll 字符串**译文表（与 AITXT 无关，勿混淆） |
-| `fixes_common.py` | 5 条补充行 |
 | `input/first.dll` | 原版 |
 | `output/first.dll` | 补丁产物（字符串 + 兼容补丁 + AITXT） |
 
