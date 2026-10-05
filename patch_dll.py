@@ -345,8 +345,8 @@ URL_RESP_PREFIX = rb'\C\![open,browser,'
 #   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x3A00 响应前缀 "\C\![open,browser,"（18B，
 #   挪到 IME 字符串(止于 0x39E5)与打字闸门桩(0x3B00)之间的空闲段；0x100 原位只够 16B）
 #   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
-#   0x1F8-0x3FF 链接桩2 响应缓冲（string 头 + 数据，链接文档）
-#   0x380-0x3FF 空闲（原"视力未弹框双击小段"已随视力全吞方案删除）
+#   0x1F8-0x317 链接桩2 响应缓冲（string 头 + 数据，链接文档）
+#   0x320-0x3FF 空闲（原取消输入框辅助函数、更早的"视力未弹框双击小段"均已迁走/删除）
 #   0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
 #   0x940 标志组(SEARCH/PENDING/GAMELEFT/EYEBUSY；0x944-0x947 原 MARK、0x94D 原 SWALLOW 已释放)
 #   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
@@ -357,6 +357,7 @@ URL_RESP_PREFIX = rb'\C\![open,browser,'
 #   拖动包装桩 @0x2000（调用点 6 处 SC_DRAGMOVE）
 #   IME 层 0x2810-0x39E5 | 打字定向屏蔽桩 @0x3B00（止于 0x3CDE；测试副本入口区 0x3D00-0x3DF0 保留）
 #   重力语变换桩 @0x4000（对话/窗口两个调用点共用）
+#   取消输入框辅助函数 @0x4300（重力桩止于 0x41B1 / 重力映射表 @0x4800 之间）
 # .cave 节大小 0x6000（0x2000 → 0x2200 拖动 → 0x4000 IME → 0x6000 重力语桩）。
 
 CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 搜索/游戏标志）
@@ -367,7 +368,8 @@ GAMELEFT_OFF = 0x94C               # 已退出游戏（Leave 置 1 / Enter 清 0
 EYEBUSY_OFF = 0x94E                # 视力保护窗口（OnEy* 置 1；双击非 passive 解除）
 CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x960 / 数据@0x964）
 CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
-CANCEL_HELPER_OFF = 0x320          # 辅助：取消输入框（取 Reference0 + 组装 \![raise,值,]）
+CANCEL_HELPER_OFF = 0x4300          # 辅助：输入框取消（仅 Ref1=close 时组装 \![raise,值,]）
+                                    # （重力桩 0x4000 止于 0x41B1、映射表 0x4800 起，此段空闲）
 CANCEL_DSTR_OFF = 0x140            # 空提交脚本 dstr（rc@0x140 / 长度@0x144 / 数据@0x148）
 CANCEL_DATA_OFF = 0x148            # 数据指针（预置 "\![raise," 9B；Ref0 值写于数据+9）
 CANCEL_VALUE_OFF = 0x151           # 数据内 Ref0 值起点（= CANCEL_DATA_OFF+9）
@@ -498,9 +500,11 @@ def _build_resp_monitor_stub(rva):
     """响应监控桩（挂在 0x47A399，request() 帧内，EBP 有效）：
 
        【事件分流】读事件名（[ebp-0x4c]，SEH 保护）：
-         - OnUs*（SSP 取消输入框：关闭/超时）：调 0x320 辅助函数取请求
-           Reference0（= 框的 ID），响应 := \\![raise,<Ref0>,]（对视力/问答/搜索
-           统一“提交空值”；取值失败则不响应）。Ref0==OnGoogle 时清 SEARCH。
+         - OnUs*（输入框取消）：仅当 Ref1=close（用户关闭）时调 0x4300 辅助函数
+           取 Reference0（框 ID），响应 := \\![raise,<Ref0>,]（空提交；视力/问答/
+           搜索统一）。Ref0==OnGoogle 时清 SEARCH。Ref1=timeout 不响应——宿主
+           原生兜底会补发 ID 事件（Ref0="timeout"），DLL 的「時間切れ」/超时分支
+           自行处理。
            不碰 EYEBUSY（视力保护窗口延续到双击非 passive 分支才解除）。
          - OnGo*（搜索提交）：清 SEARCH。
          - OnQu* / OnTy*：Leave → PENDING+GAMELEFT+关窗体（见 .setpend）；
@@ -581,10 +585,11 @@ def _build_resp_monitor_stub(rva):
     b += b'\x81\x3E\x4F\x6E\x45\x79'                    # cmp [esi],'OnEy'
     jcc32(0x0F, 0x84, 'chkey')                          # je .chkey（距离远须 rel32）
     jmp32('after')                                      # 都不是→跳过（距离远，须 rel32）
-    # .chkus：OnUs*（SSP 取消输入框：关闭/超时）统一处理：
-    #   调 cave+0x320 辅助函数取请求 Reference0（= 框 ID）并组装
-    #   `\![raise,<Ref0>,]`；SSP 触发该 ID 事件（空值），DLL 走"提交空值"
-    #   路径（视力/问答/搜索一致）。Ref0==OnGoogle 时清 SEARCH。
+    # .chkus：OnUs*（输入框取消）：
+    #   只有 Ref1=close（用户关闭）才由我们补空提交（`\![raise,<Ref0>,]`）；
+    #   超时（Ref1=timeout）不响应 → 宿主原生兜底补发 ID 事件（Ref0="timeout"），
+    #   DLL 的「時間切れ」/超时分支自行处理。
+    #   Ref0==OnGoogle 时清 SEARCH（辅助函数返回 2）。
     #   不碰 EYEBUSY——视力反馈期也要保护，解除只在桩B 双击非 passive 分支。
     label('chkus')
     call_abs(rva - CAVE_A_OFF + CANCEL_HELPER_OFF)      # call 辅助函数（返回 0/1/2）
@@ -771,14 +776,16 @@ def _build_resp_monitor_stub(rva):
 
 
 def _build_cancel_helper():
-    """取消输入框辅助函数（.cave+0x320，由桩A .chkus 调用；不碰 ebx）：
+    """取消输入框辅助函数（.cave+0x4300，由桩A .chkus 调用；不碰 ebx）：
 
-      在请求里找 "Reference0: "（12B），把其后的值（到 CR/LF/NUL/请求末尾，
-      上限 64B）抄到 CANCEL_VALUE_OFF，补后缀 ",]" + NUL，更新 dstr 头
-      （rc=-1、len=9+值长+2；"\\![raise," 9B 为构建期预置）。
+      只有"用户关闭"（Ref1=close）才由我们补提交：在请求里找 "Reference0: "（12B），
+      把其后的值（到 CR/LF/NUL/请求末尾，上限 64B）抄到 CANCEL_VALUE_OFF，补后缀
+      ",]" + NUL，更新 dstr 头（rc=-1、len=9+值长+2；"\\![raise," 9B 为构建期预置）。
+      超时（Ref1=timeout）**一律不响应**（204）——交给宿主原生兜底：宿主会补发
+      ID 事件且 Reference0="timeout"，DLL 原生的「時間切れ」/超时分支自行处理。
 
-      返回：eax=0 没找到/空值；1 已组装（值≠OnGoogle）；2 已组装（值==OnGoogle，
-      调用方据此清 SEARCH）。全程位置无关（call/pop 自算缓冲地址）。
+      返回：eax=0 不处理（没找到 Ref0、空值、或 Ref1≠close）；1 已组装（值≠OnGoogle）；
+      2 已组装（值==OnGoogle，调用方据此清 SEARCH）。全程位置无关。
     """
     b = bytearray()
     labels = {}
@@ -794,6 +801,12 @@ def _build_cancel_helper():
 
     def jmp32(name):
         b.append(0xE9)
+        fixups.append(('rel32', len(b), name))
+        b.extend(b'\x00\x00\x00\x00')
+
+    def jcc32(op0, op1, name):
+        b.append(op0)
+        b.append(op1)
         fixups.append(('rel32', len(b), name))
         b.extend(b'\x00\x00\x00\x00')
 
@@ -848,7 +861,34 @@ def _build_cancel_helper():
     j8(0x72, 'cpy')                                  # jb .cpy
     label('done')
     b += b'\x85\xD2'                                 # test edx,edx
-    j8(0x74, 'empty')                                # jz .empty
+    jcc32(0x0F, 0x84, 'empty')                       # jz .empty（距离远，rel32）
+    # 扫 "Reference1: close"（17B）：只有"用户关闭"才由我们补空提交；
+    # 超时（Ref1=timeout）不响应 → 宿主原生兜底（补发 ID 事件、Ref0=timeout，
+    # 走 DLL 的「時間切れ」/超时分支）
+    b += b'\x8B\x75\x08'                             # mov esi,[ebp+8]（重新取请求）
+    b += b'\x8B\x4D\x0C'                             # mov ecx,[ebp+0xC]
+    b += b'\x8B\x09'                                 # mov ecx,[ecx]
+    b += b'\x83\xF9\x11'                             # cmp ecx,17
+    jcc32(0x0F, 0x82, 'empty')                       # jb .empty（太短→不处理）
+    b += b'\x03\xCE'                                 # add ecx,esi
+    b += b'\x83\xE9\x11'                             # sub ecx,17（末位置）
+    label('ts')
+    b += b'\x81\x3E\x52\x65\x66\x65'                 # cmp [esi],'Refe'
+    j8(0x75, 'tn')
+    b += b'\x81\x7E\x04\x72\x65\x6E\x63'             # cmp [esi+4],'renc'
+    j8(0x75, 'tn')
+    b += b'\x81\x7E\x08\x65\x31\x3A\x20'             # cmp [esi+8],'e1: '
+    j8(0x75, 'tn')
+    b += b'\x81\x7E\x0C\x63\x6C\x6F\x73'             # cmp [esi+12],'clos'
+    j8(0x75, 'tn')
+    b += b'\x80\x7E\x10\x65'                         # cmp byte [esi+16],'e'
+    j8(0x74, 'build')
+    label('tn')
+    b += b'\x46'                                     # inc esi
+    b += b'\x39\xCE'                                 # cmp esi,ecx
+    j8(0x76, 'ts')                                   # jbe .ts
+    jmp32('empty')                                   # 未找到（timeout）→ 不响应
+    label('build')
     b += b'\x89\xF8'                                 # mov eax,edi（值末尾）
     b += b'\x29\xD0'                                 # sub eax,edx（值起点）
     b += b'\xC7\x07\x2C\x5D\x00\x00'                 # mov dword [edi],',]\0\0'
@@ -877,7 +917,7 @@ def _build_cancel_helper():
             struct.pack_into('<b', b, pos, v)
         else:
             struct.pack_into('<i', b, pos, target - (pos + 4))
-    assert len(b) <= 0xE0, hex(len(b))
+    assert len(b) <= 0x400, hex(len(b))
     return bytes(b)
 
 
@@ -1482,8 +1522,8 @@ def _build_closebox_stub(cave_va):
     strs[0x000:0x010] = b'Ttypinggameform\x00'
     strs[0x010:0x01F] = b'Teyesightform\x00'
     strs[0x020:0x02E] = b'Tcountdownform\x00'
-    # 取消空提交 dstr：预置 rc=-1 / len=0 / "\![raise,"（9B；运行时由 0x320 辅助
-    # 函数在数据+9 写入 Ref0 值、补 ",]" 并更新 rc/len）
+    # 取消空提交 dstr：预置 rc=-1 / len=0 / "\![raise,"（9B；运行时由 0x4300 辅助
+    # 函数在数据+9 写入 Ref0 值、按 Ref1 补 ",]" 或 ",timeout]" 并更新 rc/len）
     o = CANCEL_DSTR_OFF - 0x110
     strs[o:o + 8] = struct.pack('<iI', -1, 0)
     o2 = CANCEL_DATA_OFF - 0x110
@@ -1681,8 +1721,8 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 6] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_A_OFF - (RESP_DONE_VA + 5))) + b'\x90'
 
-    # 取消输入框辅助函数（.cave+0x320，桩A .chkus 调用：取 Reference0 并组装
-    # \![raise,值,]；数据缓冲/预置前缀在 .cave+0x140 一带）
+    # 取消输入框辅助函数（.cave+0x4300，桩A .chkus 调用：仅 Ref1=close 时组装
+    # \![raise,值,]；超时交给宿主原生兜底；数据缓冲/预置前缀在 .cave+0x140 一带）
     stubX = _build_cancel_helper()
     data[raw + CANCEL_HELPER_OFF:raw + CANCEL_HELPER_OFF + len(stubX)] = stubX
 
