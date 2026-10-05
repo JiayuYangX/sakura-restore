@@ -1,106 +1,63 @@
 #!/usr/bin/env python3
 """
-一次完成 first.dll 的全部补丁，输出到 output/。
-可选：命令行第一个参数 = 部署目标（ghost master 目录，或该目录下任一 dll 路径），
-first.dll 会被复制过去。
+first.dll 汉化与兼容补丁 · 一键构建脚本
+===============================================================================
 
-first.dll：
+项目：MATERIA 内置人格「さくら」→ SSP 移植 + 全面汉化（背景见 README.md）。
+输入：input/first.dll + translated.csv（字符串译文）+ aitxt_translated.txt（词库译文）
+输出：output/first.dll；命令行第一个参数 = 部署目标（ghost master 目录或任一 dll 路径）。
 
-  文本翻译（CSV）：
-    Offset = 写入位置，Length = 最大字节数，Type = code|answer|rsrc|font|font1。
-    - code：off-4 处为 4 字节小端长度，写入后更新长度并清零剩余
-    - answer：文本按编码规则（默认 GBK）转为「反转大写 hex」再写入
-      （off-4 处长度同步更新；新字节数不得超过原长，否则报「答案超长」跳过）
-    - rsrc：off-1 处为 1 字节长度，写入后更新长度并清零剩余
-    - font：无长度前缀（裸字面量），用 \x00 补齐
-    - font1：ShortString 常量（off-1 处为 1 字节长度），写入后更新长度并清零剩余
+用法
+    构建：  python patch_dll.py
+    部署：  python patch_dll.py "<ghost master 目录>"
 
-  兼容补丁（写入前逐字节校验原值）：
-    1. NOTIFY -> 按 GET 分发（把 0x719E9 处的 jne 填成 NOP）
-       first.dll 只实现了 GET；SSP 2.5.33+ 在 cantalk=0 时会把后台事件
-       以 NOTIFY 发来，之前会收到 400 并卡死状态机。
-    2. r"\\![enter,inductionmode]" 字符串长度 23 -> 0（0x79E08）
-       诱导模式会让 cantalk 永远保持 false，导致后台事件走 NOTIFY
-       （响应被忽略）、泡澡结束的对话不可见。
+地址约定
+    文件偏移 = VA - 0x400C00（CODE 段）；VA = 文件偏移 + 0x400C00。
+    SSP 占用首选基址 0x400000 → first.dll 每次加载都会被重定位；
+    所有桩必须位置无关（相对跳转 + call/pop 自定位），不得写构造期绝对地址。
 
-  AITXT（词库）：aitxt_translated.txt（UTF-8）-> GBK -> 加密数据块，覆盖 PE 资源
-    目录中定位到的 AITXT 资源，并更新资源数据项的 Size 字段。写入前 round-trip 校验。
+构建铁律
+    1. 每个代码/数据钩点在写入前逐字节校验原值，不符即报错拒出；
+    2. 每个桩有长度断言；.cave 布局有零区预检与不越界断言；
+    3. .cave 追加节 RVA 固定 0xE2000（exitfix/ctx 有硬断言）——
+       资源手术（Teyesightform DFM 追加）必须先于 add_cave_section；
+    4. 改 .cave 偏移时，所有以 ebx 为基址的 disp / 缓存与标志偏移同步更新。
 
-  链接化补丁（海原雄山）：「自动加链接」名单由 7 段固定序列注册，最后一段（木野さん）
-    的 call 重定向到 .cave 小桩：先补完原调用，再对「海原雄山」常量调用一次注册。
+文件索引（按 patches.txt 六类）
+    1 翻译与替换   main 首段（CSV 字符串）/ patch_aitxt / patch_dfm_charset /
+                   patch_dfm_teyesight_scaled
+    2 SHIORI 兼容  PATCHES（NOTIFY 分发、诱导模式长度清零）
+    3 链接/锚点    _build_linkify_stub（海原雄山）/ _build_url_stub（RSS 气泡保留）
+    4 菜单逻辑     _build_resp_monitor_stub（桩A）/ _build_dc_status_stub（桩B）/
+                   _build_cancel_helper / _build_closebox_stub / _build_typing_closeq_stub
+    5 对话替换     _build_typing_gate_stub / _build_gravity_map + _build_gravity_stub
+    6 窗口修复     6.1 patch_exit_fix + patch_ctx_return_on_detach
+                   6.2 patch_kbd_fix
+                   6.3 patch_dpi_wrap / patch_dpi_drag / patch_dpi_sysfont /
+                       patch_createparams_hredraw
+                   6.4 build_ime_layer（IME_* 子构建器）
+                   6.5 patch_ulw_hitmask（命中掩码 + 跨 100% 刷新）
+    0 公共工具     apply_patches / add_cave_section / PE 定位与读写 / gbk_bytes
 
-  RSS 链接补丁（OnAnchorSelect 打开浏览器）：兜底分支入口重定向到 .cave 第二桩：
-    Ref0 以 "http" 开头则拼出 "\\C + \\![open,browser,<URL>]" 返回——\\C 追记到当前气球
-    （不开始新一轮 talk → 新闻气泡不关，可连续点击），详见 URL_RESP_PREFIX。
-
-  游戏 / 双击相关补丁（.cave 内若干桩，详见各构建函数文档串）：
-    - 桩A（响应监控，挂 0x47A399）：搜索框标志（SEARCH）、视力保护窗口（EYEBUSY）、
-      游戏退出收尾（PENDING+GAMELEFT）、游戏菜单缓存、取消输入框统一按“空提交”；
-    - 桩B（双击判定，挂 0x4782BD）：菜单(choosing)/搜索框双击吞掉；被动时视力窗口吞、
-      否则重放该游戏菜单；非被动时解除 EYEBUSY 后走主菜单。
-    - 关窗体辅助桩：FindWindowA + WM_CLOSE 关 Ttypinggameform / Teyesightform /
-      Tcountdownform；CloseQuery 跳板保证 GAMELEFT 期间打字框可关。
-    - 打字定向屏蔽（挂 0x47239D 的 ConvertAll 调用处）：打字游戏进行中只豁免
-       "玩家输入脚本"与"要打文本"子串，提示语/结算语照常转换；退出游戏恢复原行为
-      （详见 _build_typing_gate_stub 与《特殊对话分析及修复.md》§8）。
-    - 重力语中文化（对话 0x418D21 / 菜单窗口 0x46FC03 两处 call 0x417048 → 表驱动变换桩）：
-      原版会变的 SJIS 字符凡在 GBK 存在的逐字复刻（1044 条映射表）+ [ ] 指令区原样 +
-      % 保留（不动搜索的 URL 编码调用点 0x476548）。
-
-  高分屏缩放与拖动：
-    - load / request 导出包装：请求期间线程置 UNAWARE_GDISCALED(-5)，把 DLL 自建
-      窗口交给系统按屏幕缩放（含 GDI 自绘文字）；请求之外 SSP 自身界面不受影响。
-    - 拖动修复：6 处 FormMouseMove 里 SC_DRAGMOVE 的 SendMessageA 调用改为经过
-      .cave 包装桩（拖动模态循环期间线程 GDISCALED）。
-    - 视力窗（Teyesightform）DFM 补 Scaled=False：它是唯一漏写该属性的窗体，
-      否则 VCL 载入缩放与 GDISCALED 包装叠加成双重放大（见《窗口分析及修复.md》§4.4）。
-    - 输入法修复（.cave IME 段，随 load 安装/unload 还原；两门控：MATERIA 等 unaware 宿主
-      安装时自动整体 no-op，运行时仅 GDISCALED(96dpi) 窗口生效；动态 DPI 因子三重修复）：
-      ① 候选框空态位置（msctf 空态分支内 prc 以窗口原点为中心 ×f）+ 感知修正；
-      ② 组字窗位置（摆位锚点 ×f，拖动自动跟随）；③ 组字窗字号（SelectObject 钩）。
-      详见《窗口分析及修复.md》§9。
-
-  状态栏重影修复（原版缺陷）：TStatusBar 的窗口类缺 CS_HREDRAW，拖动改变 Todo/Notify
-    宽度时系统不做整窗失效、旧像素残留（文字重影）。在 TWinControl.CreateWnd 调用虚拟
-    CreateParams 的指令处（0x4352C1）挂透明桩：仅当栈帧里类名为 "TStatusBar" 时给
-    Params.WindowClass.style 补 CS_HREDRAW；其余类原样通过，不碰 RegisterClassA。
-
-first.dll 的 ULW 层（patch_ulw_hitmask，含命中掩码与跨 100% 刷新修复）：
-  ① 命中掩码：监控窗为 WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口，系统按
-     图层 alpha 做鼠标命中判定（alpha==0 穿透）。100% 缩放时判定与显示一一对应；DPI
-     虚拟化（≠100%）下系统读取图层的坐标被放大 2 倍，命中区与显示错位。修复 = 每次上屏
-     前仅对两个监控窗的 32bpp 图层把内容按 1/2 缩半写成不可见命中标记（alpha=1/255）；
-     =100% 不做任何修改。
-  ② 跨 100% 缩放刷新修复（原 misaki 子类化方案已迁入本层）：上屏桩每帧核对并（重）挂
-     监控窗的 WndProc 子类化；WndProc 桩在 WM_WINDOWPOSCHANGED 门控"向上穿越 100%"时
-     cloak + WS_EX_LAYERED 往返重建分层表面，待解除 cloak 标记由下一次上屏桩处理
-     （详见《窗口分析及修复.md》§10）。
-
-first.dll 退出崩溃修复层（patch_exit_fix + V7 归还 patch_ctx_return_on_detach）：
-  SSP 退出/重载/切人格时，模块卸载后残留的"僵尸活动"（消息派发等）会落到已卸载代码上，
-  造成退出崩溃（0x1476a / 0x7474 一族）；而提前断路又会破坏收尾/存档（0x2E44 一族）。
-  定稿 = 两件套：
-  1) unload 导出经 EAT 重定向到存根（.cave+0x2400）：先按模块范围/监控窗类名清扫一轮
-     WndProc → 线程切 UNAWARE_GDISCALED 并把旧上下文经 SetPropA 存到 SSPMAIN 的
-     "dpictx" 属性 → 销毁两个注册窗体（触发原生存档）→ call 原 teardown 完好入口等其
-     返回 → 跳收尾例程（只做 EnumWindows 断路：WndProc 在本模块范围或监控窗类名的窗口
-     换 DefWindowProcA；不恢复 DPI 上下文，线程保持 -5 到卸载完成，保证迟到存档也读虚拟
-     坐标）；
-  2) 归还（V7）：DllMain 的 DLL_PROCESS_DETACH 末尾（入口 detour）从 "dpictx" 读回旧
-     上下文归还——触发点绑定"本模块自己的卸载"，重载/切人格/退出全覆盖。
-  全程同步：无定时器、无辅助线程、无轮询。
-
+.cave 布局（A1 迁移版；详见 docs/补丁重构调查与规划.md §6）
+    0x0000-0x01EC  3 链接   桩1/桩2/前缀/响应缓冲
+    0x0200-0x1E50  4 菜单   类名+dstr/关窗桩/桩B/桩A/helper/标志/缓存/CMD/CloseQuery/PENDING
+    0x2000-0x22BC  6.3 缩放 request/load/拖动/系统字体/CS_HREDRAW/DPI 数据
+    0x2300-0x2690  6.1 退出 收尾/暂存/存根/类名/V7 桩+跳板/枚举回调/类名缓冲
+    0x2810-0x39FC  6.4 IME band1（数据/CTS/SEL/安装/钩子/包装/字符串）
+    0x3A10-0x4E52  5 对话   打字闸门/重力语桩/重力映射表
+    0x5860-0x7400  6.4 IME band2（AWRFIX/组字窗/还原/空态光标）
+    0x6400-0x6A9C  6.2 键盘
+    0x7700-0x7F60  6.5 ULW/WL（上屏桩/WndProc/掩码数据）
+    空闲区：0x1E50-0x2000、0x2690-0x2810、0x4E60-0x5860、0x7500-0x7700
+===============================================================================
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
 
-# 需要按 Shift-JIS 写入的偏移（其余一律 GBK）。
-# 空白：原先 12 条窗口 label 文案必须 SJIS（所在窗体 Font.Charset=SHIFTJIS_CHARSET，
-# TLabel 走 GDI 自绘、按字体 charset 的代码页 CP932 解释字节）；
-# 现已把 Tfirstconfigform / Tnotifyform 的 Font.Charset 改成 GB2312_CHARSET
-# （见 patch_dfm_charset），这些 label 的字节改按 ACP(936) 解释，随大流用 GBK。
-SHIFTJIS_OFFSETS = set()
-
-# （偏移, 原始字节, 替换字节）
+# ============================================================================
+# 2. SHIORI 兼容性修复（NOTIFY 分发 / 诱导模式长度清零）
+#    PATCHES = (文件偏移, 原始字节, 替换字节)：写入前逐字节校验原值
+# ============================================================================
 PATCHES = [
     # 1. NOTIFY -> 按 GET 分发
     (0x719E9, bytes.fromhex('0F 85 AF 7E 00 00'), b'\x90' * 6),
@@ -109,10 +66,11 @@ PATCHES = [
 ]
 
 
-IME_ENABLE = True
+IME_ENABLE = True   # 6.4 IME 修复层总开关（False = 完全跳过）
 
 
 def apply_patches(data: bytes) -> bytes:
+    """2 类兼容补丁：按 PATCHES 表逐条校验原字节后改写（NOTIFY / 诱导模式）。"""
     out = data
     for off, orig, repl in PATCHES:
         if out[off:off + len(orig)] != orig:
@@ -124,7 +82,9 @@ def apply_patches(data: bytes) -> bytes:
     return out
 
 
-# ------------------------------------------------- DFM 窗体字体编码
+# ----------------------------------------------------------------------------
+# 1.3 DFM Font.Charset 修改（Tfirstconfigform / Tnotifyform → GB2312_CHARSET）
+# ----------------------------------------------------------------------------
 
 DFM_CHARSET_OLD = b'\x07\x10SHIFTJIS_CHARSET'   # 值编码：[0x07][长度][标识符]
 DFM_CHARSET_NEW = b'\x07\x0EGB2312_CHARSET'
@@ -251,7 +211,9 @@ def patch_dfm_teyesight_scaled(data: bytearray) -> bytearray:
     return data
 
 
-# ------------------------------------------------- 链接化补丁（海原雄山）
+# ----------------------------------------------------------------------------
+# 3.1 链接化补丁："海原雄山"补注册（挂钩原 7 段注册序列的最后一段）
+# ----------------------------------------------------------------------------
 
 LINKIFY_CALL_OFF = 0xA9E37          # 最后一段（木野さん）的 call 0x4AA838
 LINKIFY_CALL_ORIG = bytes.fromhex('E8 FC FD FF FF')
@@ -331,8 +293,8 @@ LSTRASG_FUNC = 0x403C58            # Delphi 字符串赋值
 FALLBACK_STR = 0x48769C            # 兜底常量「\0\s0……\w8\w8\s4ん？」（翻译表改写）
 
 CAVE2_OFF = 0x20                   # 第二桩在 .cave 内的偏移
-PREFIX_OFF = 0x3A00                # 响应前缀常量（见 URL_RESP_PREFIX；0x100 原位只够 16B）
-BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
+PREFIX_OFF = 0x00B0                # 响应前缀常量（见 URL_RESP_PREFIX；C 区，紧贴桩2）
+BUF_DATA_OFF = 0x00D8              # 响应缓冲数据（rc/len 在 数据-8/-4；cap 0x114 → 止于 0x1EC）
 # RSS 锚点响应前缀：
 #   \C               → 追记到"当前气球"（不开始新一轮 talk → 气泡不关！）
 #   \![open,browser, → 打开浏览器（后接 URL，桩里再补 ']'）
@@ -340,39 +302,38 @@ BUF_DATA_OFF = 0x200               # 响应缓冲（数据指针）
 #     \![open,browser, 无可见副作用，故采用此简式（见《链接机制说明及补丁.md》§3）。
 URL_RESP_PREFIX = rb'\C\![open,browser,'
 
-# ---- 游戏/双击相关补丁的 .cave 数据区 ----
-# .cave 布局（0x2000 字节追加节；改动后应做区间重叠检查）：
-#   0x000 链接化桩(26) | 0x020 RSS桩(134) | 0x3A00 响应前缀 "\C\![open,browser,"（18B，
-#   挪到 IME 字符串(止于 0x39E5)与打字闸门桩(0x3B00)之间的空闲段；0x100 原位只够 16B）
-#   0x110 类名串 + 空提交脚本(dstr @0x140/数据@0x148)
-#   0x1F8-0x317 链接桩2 响应缓冲（string 头 + 数据，链接文档）
-#   0x320-0x3FF 空闲（原取消输入框辅助函数、更早的"视力未弹框双击小段"均已迁走/删除）
-#   0x400 关窗体辅助桩(0x400-0x486) | 0x500 双击判定桩B | 0x600 响应监控桩A
-#   0x940 标志组(SEARCH/PENDING/GAMELEFT/EYEBUSY；0x944-0x947 原 MARK、0x94D 原 SWALLOW 已释放)
-#   0x95C 菜单缓存头(rc@0x95C/长度@0x960/数据@0x964，cap 0x6E0)
-#   0x1050 CLOSE_CMD(123) | 0x10D0 CloseQuery跳板 | 0x10F8 PENDING前置拼接缓冲(rc/len@0x10FC/数据@0x1100，
-#          数据可达 0x1F7B，故 0x1F7C 之后才空)
-#   高分屏包装桩：request@0x170（空闲段 0x167-0x1F7）| load@0x1F7C（尾段）| 数据@0xB0
-#   （PSET/字符串，占用 0xA7-0xFF 空闲段）
-#   拖动包装桩 @0x2000（调用点 6 处 SC_DRAGMOVE）
-#   IME 层 0x2810-0x39E5 | 打字定向屏蔽桩 @0x3B00（止于 0x3CDE；测试副本入口区 0x3D00-0x3DF0 保留）
-#   重力语变换桩 @0x4000（对话/窗口两个调用点共用）
-#   取消输入框辅助函数 @0x4300（重力桩止于 0x41B1 / 重力映射表 @0x4800 之间）
-# .cave 节大小 0x6000（0x2000 → 0x2200 拖动 → 0x4000 IME → 0x6000 重力语桩）。
+# ============================================================================
+# 3.2 / 4 / 5 共享：.cave 数据区布局与常量
+# ============================================================================
+# .cave 布局（2026 迁移版 A1；改动后应做区间重叠检查）：
+#   3 链接   0x0000 链接化桩 | 0x0020 RSS桩 | 0x00B0 前缀 | 0x00D0 桩2 缓冲(rc/len@0xD0，数据@0xD8-0x1EC)
+#   4 菜单   0x0200 类名串+dstr(类名0x200/0x210/0x220；dstr rc@0x230/len@0x234/数据@0x238/值@0x241)
+#           0x0300 关窗体辅助桩 | 0x03A0 双击判定桩B | 0x04A0 响应监控桩A | 0x0700 取消辅助函数
+#           0x0800 标志组(SEARCH/PENDING/GAMELEFT/EYEBUSY) | 0x0818 菜单缓存(rc/len@0x81C/数据@0x820，cap 0x6E0)
+#           0x0F10 CLOSE_CMD(124) | 0x0FA0 CloseQuery跳板 | 0x0FC0 PENDING缓冲(rc/len@0xFC4/数据@0xFC8，可达0x1E44)
+#   5 对话   0x3A10 打字定向屏蔽桩(≤0x1F0) | 0x3C00 重力语变换桩 | 0x3E00 重力映射表
+#   6.3 缩放 0x2000 request 包装 | 0x20A0 load 包装 | 0x2140 拖动包装 | 0x21E0 系统字体包装
+#           0x2260 CS_HREDRAW 桩 | 0x2290 DPI 数据(PSET/字符串)
+#   6.1 退出 0x2300 收尾例程 | 0x2320 上下文暂存槽 | 0x2330 存根 | 0x2440 窗类名 | 0x2480 属性名
+#           0x2490 V7 归还桩 | 0x2550 V7跳板 | 0x2570 枚举回调 | 0x2610 类名缓冲 | 0x2660/0x2680 类名串
+#   固定层   0x2810-0x39FC IME band1 | 0x5860-0x7400 IME band2 | 0x6400-0x6A9C 键盘 | 0x7700-0x7F60 ULW/WL
+# .cave 节大小 0x8000。
 
-CAVE_B_OFF = 0x500                 # 桩B：双击判定（读请求 Status + 搜索/游戏标志）
-CAVE_A_OFF = 0x600                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
-SEARCH_OFF = 0x940                 # 搜索框标志（dword：1=搜索输入框开着）
-PENDING_OFF = 0x948                # 退出待处理字节（1=本次退出响应前置 CLOSE_CMD）
-GAMELEFT_OFF = 0x94C               # 已退出游戏（Leave 置 1 / Enter 清 0；放行打字框 CloseQuery 用）
-EYEBUSY_OFF = 0x94E                # 视力保护窗口（OnEy* 置 1；双击非 passive 解除）
-CACHE_OFF = 0x960                  # 游戏菜单缓存（rc@0x95C / 长度@0x960 / 数据@0x964）
-CLOSE_CMD_OFF = 0x1050             # 常量：退出时前置到响应的收尾命令
-CANCEL_HELPER_OFF = 0x4300          # 辅助：输入框取消（仅 Ref1=close 时组装 \![raise,值,]）
-                                    # （重力桩 0x4000 止于 0x41B1、映射表 0x4800 起，此段空闲）
-CANCEL_DSTR_OFF = 0x140            # 空提交脚本 dstr（rc@0x140 / 长度@0x144 / 数据@0x148）
-CANCEL_DATA_OFF = 0x148            # 数据指针（预置 "\![raise," 9B；Ref0 值写于数据+9）
-CANCEL_VALUE_OFF = 0x151           # 数据内 Ref0 值起点（= CANCEL_DATA_OFF+9）
+CLS_STR_OFF = 0x200                # 类名串+dstr 块（Ttypinggameform/Teyesightform/Tcountdownform + 空提交 dstr）
+CLS_STR_SIZE = 0xE2                # 块长（0x200-0x2E2）
+CLOSEBOX_OFF = 0x300               # 关窗体辅助桩（由桩A .setpend 以 ebx 相对位移调用）
+CAVE_B_OFF = 0x3A0                 # 桩B：双击判定（读请求 Status + 搜索/游戏标志）
+CAVE_A_OFF = 0x4A0                 # 桩A：响应监控（标志维护/退出收尾/菜单缓存）
+SEARCH_OFF = 0x800                 # 搜索框标志（dword：1=搜索输入框开着）
+PENDING_OFF = 0x808                # 退出待处理字节（1=本次退出响应前置 CLOSE_CMD）
+GAMELEFT_OFF = 0x80C               # 已退出游戏（Leave 置 1 / Enter 清 0；放行打字框 CloseQuery 用）
+EYEBUSY_OFF = 0x80E                # 视力保护窗口（OnEy* 置 1；双击非 passive 解除）
+CACHE_OFF = 0x81C                  # 游戏菜单缓存（rc@0x818 / 长度@0x81C / 数据@0x820）
+CLOSE_CMD_OFF = 0xF10              # 常量：退出时前置到响应的收尾命令
+CANCEL_HELPER_OFF = 0x700          # 辅助：输入框取消（仅 Ref1=close 时组装 \![raise,值,]；紧贴桩A）
+CANCEL_DSTR_OFF = 0x230            # 空提交脚本 dstr（rc@0x230 / 长度@0x234 / 数据@0x238）
+CANCEL_DATA_OFF = 0x238            # 数据指针（预置 "\![raise," 9B；Ref0 值写于数据+9）
+CANCEL_VALUE_OFF = 0x241           # 数据内 Ref0 值起点（= CANCEL_DATA_OFF+9）
 # 说明：问答游戏的答题框是 SSP 的 inputbox；打字游戏的框是 DLL 自己的窗体
 #      （由辅助桩 WM_CLOSE 关闭，不靠这些命令）。多关几个箱型无副作用。
 #      `leave,passivemode` 追加在尾部：问答/打字退出时 DLL 自身响应本来就以
@@ -382,12 +343,12 @@ CLOSE_CMD = (b'\\![quicksection,false]'
              b'\\![close,teachbox]'
              b'\\![close,inputbox,__SYSTEM_ALL_INPUT__]'
              b'\\![leave,passivemode]')
-PBUF_LEN_OFF = 0x10FC              # PENDING 前置拼接缓冲：长度（rc 在 -4，数据在 +4）
-PBUF_DATA_OFF = 0x1100             # 数据（cap 0xE00）
+PBUF_LEN_OFF = 0x0FC4              # PENDING 前置拼接缓冲：长度（rc 在 -4，数据在 +4）
+PBUF_DATA_OFF = 0x0FC8             # 数据（cap 0xE00，最大写入 0xE7C → 止于 0x1E44）
 TYPING_CLOSEQ_OFF = 0x6E200        # formCloseQuery：CanClose := 窗体.已提交标志[Self+0x321]
 TYPING_CLOSEQ_ORIG = bytes.fromhex('8A 80 21 03 00 00 88 01 C3')
 TYPING_CLOSEQ_VA = 0x46EE00
-CAVE_Q_OFF = 0x10D0                # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
+CAVE_Q_OFF = 0xFA0                 # CloseQuery 跳板：GAMELEFT 时放行关闭（配合 WM_CLOSE）
 
 # 打字游戏期间的定向屏蔽（只保护"要打文本"与"玩家输入"，其余照常转换）：
 #   打字框文字经 SSTP 提交时会被 SSP 的脚本翻译过一遍（= DLL 的 ConvertAll C），
@@ -401,7 +362,7 @@ CAVE_Q_OFF = 0x10D0                # CloseQuery 跳板：GAMELEFT 时放行关�
 #   非打字游戏时：完全不变（照常 ConvertAll）。
 TYPING_GATE_HOOK_VA = 0x47239D
 TYPING_GATE_HOOK_ORIG = bytes.fromhex('E8 3A E5 FF FF')     # call 0x4708DC
-TYPING_GATE_STUB_OFF = 0x3B00      # 桩位置（cave 尾部空闲区：IME 字符串止于 0x39E5）
+TYPING_GATE_STUB_OFF = 0x3A10      # 桩位置（E 区：IME 字符串止于 0x39FC；≤0x1F0 不越过重力桩）
 TYPING_FLAG_VA = 0x4ADCDC          # 打字游戏进行中标志
 CONVERT_ALL_VA = 0x4708DC          # 四模式转换（OnTranslate / 对话框都用它）
 LSTRASG_VA = 0x403C14              # Delphi 字符串赋值（var ← 值）
@@ -429,8 +390,8 @@ PHRASE_VAR_VA = 0x4B29F8           # 当前"要打文本" ANSI 串全局
 GRAVITY_ESCAPE_VA = 0x417048       # 原转义函数（搜索 URL 编码共用一个调用点，勿动本体）
 GRAVITY_HOOK_DLG_VA = 0x418D21     # 对话管线内 call 0x417048
 GRAVITY_HOOK_WIN_VA = 0x46FC03     # Tjtogvform.editChange 内 call 0x417048
-GRAVITY_STUB_OFF = 0x4000          # 新桩（cave 扩至 0x6000 后的空闲段）
-GRAVITY_TABLE_OFF = 0x4800         # 逐字映射表（4B/条 + 0000 终结；约 0x1052 字节）
+GRAVITY_STUB_OFF = 0x3C00          # 新桩（E 区：打字闸门之后）
+GRAVITY_TABLE_OFF = 0x3E00         # 逐字映射表（4B/条 + 0000 终结；约 0x1052 字节）
 
 RESP_DONE_VA = 0x47A399            # 事件响应汇总点（所有响应都经过）
 RESP_DONE_ORIG = bytes.fromhex('83 7D E4 00 75 12')     # cmp [ebp-1C],0 / jne
@@ -443,6 +404,9 @@ DC_CONT_VA = 0x4782C5              # 原样继续点
 DC_DONE_VA = 0x478848              # 处理完成的共同出口（清响应 → 204）
 
 
+# ----------------------------------------------------------------------------
+# 3.2 RSS 链接桩（OnAnchorSelect：http 锚点 → 打开浏览器并保留新闻气泡）
+# ----------------------------------------------------------------------------
 def _build_url_stub(rva):
     """OnAnchorSelect 桩：Ref0=[ebp-0x1c]。http 开头 ->
     拼接 URL_RESP_PREFIX（\\C 追记 + \\![open,browser,）+ Ref0 + "]" 到节内缓冲并返回；
@@ -496,11 +460,14 @@ def _build_url_stub(rva):
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 4 菜单逻辑：响应监控桩A（SEARCH/EYEBUSY/PENDING/GAMELEFT/菜单缓存/取消输入框）
+# ----------------------------------------------------------------------------
 def _build_resp_monitor_stub(rva):
     """响应监控桩（挂在 0x47A399，request() 帧内，EBP 有效）：
 
        【事件分流】读事件名（[ebp-0x4c]，SEH 保护）：
-         - OnUs*（输入框取消）：仅当 Ref1=close（用户关闭）时调 0x4300 辅助函数
+         - OnUs*（输入框取消）：仅当 Ref1=close（用户关闭）时调 cave+CANCEL_HELPER_OFF 辅助函数
            取 Reference0（框 ID），响应 := \\![raise,<Ref0>,]（空提交；视力/问答/
            搜索统一）。Ref0==OnGoogle 时清 SEARCH。Ref1=timeout 不响应——宿主
            原生兜底会补发 ID 事件（Ref0="timeout"），DLL 的「時間切れ」/超时分支
@@ -634,9 +601,9 @@ def _build_resp_monitor_stub(rva):
     b += b'\xC6\x02\x01'                                # mov byte [edx],1（PENDING）
     b += b'\xC6\x42\x04\x01'                            # mov byte [edx+4],1（GAMELEFT）
     # 辅助桩按类名找 Ttypinggameform/Teyesightform/Tcountdownform 并投递
-    # WM_CLOSE（异步）；打字框的 CloseQuery 由 .cave+0x10D0 的桩在 GAMELEFT
+    # WM_CLOSE（异步）；打字框的 CloseQuery 由 CloseQuery 跳板在 GAMELEFT
     # 时放行，视力窗本来就无拦截。全程无键盘消息，无编辑框回车提示音。
-    call_abs(rva - 0x200)                               # 辅助桩在 cave+0x400（stubA 起点-0x200）
+    call_abs(rva - CAVE_A_OFF + CLOSEBOX_OFF)           # 辅助桩（cave+CLOSEBOX_OFF）
     jmp32('after')
     # .clrgl：清 GAMELEFT（回到游戏）
     label('clrgl')
@@ -775,8 +742,12 @@ def _build_resp_monitor_stub(rva):
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 4(3) 取消输入框辅助函数（仅 Ref1=close → 组装 \![raise,<Ref0>,] 空提交；
+#       timeout 不响应，交给宿主原生兜底）
+# ----------------------------------------------------------------------------
 def _build_cancel_helper():
-    """取消输入框辅助函数（.cave+0x4300，由桩A .chkus 调用；不碰 ebx）：
+    """取消输入框辅助函数（cave+CANCEL_HELPER_OFF=0x700，由桩A .chkus 调用；不碰 ebx）：
 
       只有"用户关闭"（Ref1=close）才由我们补提交：在请求里找 "Reference0: "（12B），
       把其后的值（到 CR/LF/NUL/请求末尾，上限 64B）抄到 CANCEL_VALUE_OFF，补后缀
@@ -917,12 +888,15 @@ def _build_cancel_helper():
             struct.pack_into('<b', b, pos, v)
         else:
             struct.pack_into('<i', b, pos, target - (pos + 4))
-    assert len(b) <= 0x400, hex(len(b))
+    assert len(b) <= 0x100, hex(len(b))
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 4(4) CloseQuery 跳板（GAMELEFT 时放行打字窗关闭，配合 WM_CLOSE）
+# ----------------------------------------------------------------------------
 def _build_typing_closeq_stub(cave_va):
-    """formCloseQuery 跳板（.cave+0x10D0，挂在 0x46EE00）。
+    """formCloseQuery 跳板（cave+CAVE_Q_OFF=0xFA0，挂在 0x46EE00）。
 
     原逻辑：CanClose := 窗体.已提交标志（[Self+0x321]）——只有回车提交路径和
     游戏超时会置位。GAMELEFT=1（已从游戏退出）时直接放行关闭，配合辅助桩发的
@@ -945,8 +919,11 @@ def _build_typing_closeq_stub(cave_va):
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 5.1 打字定向屏蔽闸门（打字游戏进行中豁免"玩家输入/要打文本"子串）
+# ----------------------------------------------------------------------------
 def _build_typing_gate_stub(stub_va):
-    """打字游戏期间的定向闸门（.cave+0x3B00，挂在 0x47239D 的 ConvertAll 调用处）。
+    """打字游戏期间的定向闸门（cave+TYPING_GATE_STUB_OFF=0x3A10，挂在 0x47239D 的 ConvertAll 调用处）。
 
     进入时 EAX=待翻译文本（ANSI 串值）、EDX=输出串变量地址（与原 ConvertAll 调用一致）。
     - 未在打字游戏（[0x4ADCDC]==0）：照常 ConvertAll（完全兼容原行为）；
@@ -961,7 +938,7 @@ def _build_typing_gate_stub(stub_va):
     全程位置无关：先 call/pop/sub 求"运行时基址-链接基址"存 [ebp-0x2C]，
     标志/常量/全局地址一律 delta 修正；查找/搬移为内联字节循环（CP936 多字节安全）。
     字符串函数按 DLL 寄存器约定：EAX=&var / 值，EDX=值 / n（与原代码一致）。
-    桩 ≤ 0x200 字节（测试副本的测试入口固定在 cave+0x3D00）。
+    桩 ≤ 0x1F0 字节（下一个桩在 cave+0x3C00，patch_extra_link 另有不越界断言）。
     """
     b = bytearray()
     labels = {}
@@ -1191,10 +1168,13 @@ def _build_typing_gate_stub(stub_va):
             struct.pack_into('<i', b, pos, name - (stub_va + pos + 4))
         elif kind == 'imm32':
             struct.pack_into('<I', b, pos, name & 0xFFFFFFFF)
-    assert len(b) <= 0x200, hex(len(b))   # 测试入口在 cave+0x3D00，桩不得越过
+    assert len(b) <= 0x1F0, hex(len(b))   # 下一桩（重力语 0x3C00）之前，桩不得越过
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 5.2 重力语中文化的逐字映射表 + 变换桩（对话 / 菜单窗口两处共用）
+# ----------------------------------------------------------------------------
 def _build_gravity_map():
     """生成重力语逐字映射表（4 字节/条：GBK 源对 + GBK 目标对；00 00 终结）。
 
@@ -1231,7 +1211,7 @@ def _build_gravity_map():
 
 
 def _build_gravity_stub(stub_va, table_va):
-    """重力语中文化的 GBK 变换桩（.cave+0x4000；替换 0x418D21 / 0x46FC03 两处
+    """重力语中文化的 GBK 变换桩（cave+GRAVITY_STUB_OFF=0x3C00；替换 0x418D21 / 0x46FC03 两处
     call 0x417048"转义"调用，对话与菜单窗口共用）。
 
     进入时 EAX=待翻译文本（ANSI 串值）、EDX=输出串变量地址（与原转义调用一致）。
@@ -1448,16 +1428,19 @@ def _build_gravity_stub(stub_va, table_va):
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 4(4) 关游戏窗体辅助桩（FindWindowA + WM_CLOSE ×3，由桩A .setpend 调用）
+# ----------------------------------------------------------------------------
 def _build_closebox_stub(cave_va):
-    """关游戏窗体的辅助桩（主块 .cave+0x400，由 stubA 的 .setpend 调用，
-    ebx = 运行时 cave+0x60B）：
+    """关游戏窗体的辅助桩（主块 .cave+CLOSEBOX_OFF，由桩A 的 .setpend 调用，
+    ebx = 运行时 cave+CAVE_A_OFF+0x0B）：
 
       退出游戏时，把游戏自己创建的 Delphi 窗体关掉：
         - "Ttypinggameform"：打字游戏的输入框（内含 TEdit 子窗）；
         - "Teyesightform"：问答第一题的 C 图窗 / 视力检查共用；
         - "Tcountdownform"：倒计时窗（无 FormClose 处理器 → 关闭=隐藏）。
       都是 FindWindowA 找到后各发一条 WM_CLOSE，让 DLL 走自己的 Close 路径
-      （打字框的 CloseQuery 需先放行，由 .cave+0x10D0 的桩在 GAMELEFT 时处理；
+      （打字框的 CloseQuery 需先放行，由 CloseQuery 跳板在 GAMELEFT 时处理；
        另外两个窗体本来就无拦截）。全程没有键盘消息 → 无编辑框回车提示音。
       PostMessage 异步投递，不会死锁（同步调用是之前卡死的教训）。
     """
@@ -1477,18 +1460,20 @@ def _build_closebox_stub(cave_va):
         b.append(short_op + 0x10)
         b.extend(r32(name))
 
-    STR_CLS = 0x110        # "Ttypinggameform"
-    STR_EYE = 0x120        # "Teyesightform"
-    STR_CD = 0x130         # "Tcountdownform"（倒计时窗；无 FormClose → 关闭=caHide）
+    STR_CLS = CLS_STR_OFF       # "Ttypinggameform"
+    STR_EYE = CLS_STR_OFF + 0x10  # "Teyesightform"
+    STR_CD = CLS_STR_OFF + 0x20   # "Tcountdownform"（倒计时窗；无 FormClose → 关闭=caHide）
 
     IAT_FW = 0x4B3704      # FindWindowA
     IAT_POST = 0x4B35E0    # PostMessageA
 
+    ANCHOR = CAVE_A_OFF + 0x0B   # 调用方（桩A）的 ebx 锚点
+
     def D(cave_off):
-        return cave_off - 0x60B
+        return cave_off - ANCHOR
 
     def call_iat(iat_va):
-        b.extend(b'\xFF\x93' + struct.pack('<i', iat_va - (cave_va + 0x60B)))
+        b.extend(b'\xFF\x93' + struct.pack('<i', iat_va - (cave_va + ANCHOR)))
 
     def close_one(cls_off, skip_label):
         b.extend(b'\x8D\x83' + struct.pack('<i', D(cls_off)))   # lea eax,[ebx+cls]
@@ -1516,21 +1501,24 @@ def _build_closebox_stub(cave_va):
     for kind, pos, name in fixups:
         t = labels[name]
         struct.pack_into('<i', b, pos, t - (pos + 4))
-    assert len(b) <= 0x100, hex(len(b))
-    # ================= 数据区（.cave+0x110）=================
-    strs = bytearray(b'\x00' * (0x1F2 - 0x110))
+    assert len(b) <= 0xA0, hex(len(b))
+    # ================= 数据区（.cave+CLS_STR_OFF 起 0xE2 字节）=================
+    strs = bytearray(b'\x00' * CLS_STR_SIZE)
     strs[0x000:0x010] = b'Ttypinggameform\x00'
     strs[0x010:0x01F] = b'Teyesightform\x00'
     strs[0x020:0x02E] = b'Tcountdownform\x00'
-    # 取消空提交 dstr：预置 rc=-1 / len=0 / "\![raise,"（9B；运行时由 0x4300 辅助
-    # 函数在数据+9 写入 Ref0 值、按 Ref1 补 ",]" 或 ",timeout]" 并更新 rc/len）
-    o = CANCEL_DSTR_OFF - 0x110
+    # 取消空提交 dstr：预置 rc=-1 / len=0 / "\![raise,"（9B；运行时由取消辅助函数
+    # 在数据+9 写入 Ref0 值、补 ",]" 并更新 rc/len）
+    o = CANCEL_DSTR_OFF - CLS_STR_OFF
     strs[o:o + 8] = struct.pack('<iI', -1, 0)
-    o2 = CANCEL_DATA_OFF - 0x110
+    o2 = CANCEL_DATA_OFF - CLS_STR_OFF
     strs[o2:o2 + 9] = b'\\![raise,'
     return bytes(b), bytes(strs)
 
 
+# ----------------------------------------------------------------------------
+# 4(1)(2) 双击判定桩B（挂 OnMouseDoubleClick：choosing/搜索吞、被动重放、非被动主菜单）
+# ----------------------------------------------------------------------------
 def _build_dc_status_stub(rva):
     """双击入口桩（挂在 0x4782BD，request() 帧内，EBP 有效）：
 
@@ -1681,10 +1669,13 @@ def _build_dc_status_stub(rva):
     return bytes(b)
 
 
+# ----------------------------------------------------------------------------
+# 应用器：把 3/4/5 类的全部 .cave 桩写入新追加节
+# ----------------------------------------------------------------------------
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（搜索/视力标志、
     取消输入框、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
-    blob = bytearray(IME_CAVE_SIZE)  # 原 0x2800 → IME 层 0x4000 → 重力语桩 0x6000
+    blob = bytearray(IME_CAVE_SIZE)  # .cave 全节 0x8000：C/D/E/F1/F2 区 + IME/键盘/ULW 固定层
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
@@ -1721,18 +1712,18 @@ def patch_extra_link(data: bytearray) -> bytearray:
     data[off:off + 6] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_A_OFF - (RESP_DONE_VA + 5))) + b'\x90'
 
-    # 取消输入框辅助函数（.cave+0x4300，桩A .chkus 调用：仅 Ref1=close 时组装
-    # \![raise,值,]；超时交给宿主原生兜底；数据缓冲/预置前缀在 .cave+0x140 一带）
+    # 取消输入框辅助函数（cave+CANCEL_HELPER_OFF，桩A .chkus 调用：仅 Ref1=close 时组装
+    # \![raise,值,]；超时交给宿主原生兜底；数据缓冲/预置前缀在 cave+CANCEL_DSTR_OFF 一带）
     stubX = _build_cancel_helper()
     data[raw + CANCEL_HELPER_OFF:raw + CANCEL_HELPER_OFF + len(stubX)] = stubX
 
     # 常量：关闭所有输入框的命令（退出事件时前置到响应）
     data[raw + CLOSE_CMD_OFF:raw + CLOSE_CMD_OFF + len(CLOSE_CMD)] = CLOSE_CMD
 
-    # 关游戏窗体辅助桩（.cave+0x400）+ 类名数据（.cave+0x110）
+    # 关游戏窗体辅助桩（cave+CLOSEBOX_OFF）+ 类名/dstr 数据（cave+CLS_STR_OFF）
     _cb, _cbstrs = _build_closebox_stub(cave_va)
-    data[raw + 0x400:raw + 0x400 + len(_cb)] = _cb
-    data[raw + 0x110:raw + 0x110 + len(_cbstrs)] = _cbstrs
+    data[raw + CLOSEBOX_OFF:raw + CLOSEBOX_OFF + len(_cb)] = _cb
+    data[raw + CLS_STR_OFF:raw + CLS_STR_OFF + len(_cbstrs)] = _cbstrs
 
     # 跳板：GAMELEFT 时放行 formCloseQuery（配合辅助桩的 WM_CLOSE 关框）
     stubQ = _build_typing_closeq_stub(cave_va)
@@ -1747,6 +1738,8 @@ def patch_extra_link(data: bytearray) -> bytearray:
     # 打字定向屏蔽：游戏进行中只豁免"玩家输入脚本"与"要打文本"子串，提示语等
     # 照常转换；退出游戏恢复；未游戏/开关全关时与原行为完全一致
     stubG = _build_typing_gate_stub(cave_va + TYPING_GATE_STUB_OFF)
+    if TYPING_GATE_STUB_OFF + len(stubG) > GRAVITY_STUB_OFF:
+        raise RuntimeError('打字定向屏蔽补丁：桩越过了重力语桩区')
     data[raw + TYPING_GATE_STUB_OFF:raw + TYPING_GATE_STUB_OFF + len(stubG)] = stubG
     off = TYPING_GATE_HOOK_VA - 0x400C00
     if bytes(data[off:off + 5]) != TYPING_GATE_HOOK_ORIG:
@@ -1786,7 +1779,9 @@ def patch_extra_link(data: bytearray) -> bytearray:
     return data
 
 
-# ------------------------------------------------------------- 高分屏缩放（导出包装）
+# ----------------------------------------------------------------------------
+# 6.3 高分屏缩放（load/request 导出包装；拖动/系统字体/CS_HREDRAW 包装见下）
+# ----------------------------------------------------------------------------
 # 不碰 CreateWindowEx 跳板/API 导入，改成把 DLL 的 load / request 两个导出入口
 # 重定向到 .cave 的包装桩：调用真实函数前后把当前线程的 DPI 感知上下文临时切到
 # UNAWARE_GDISCALED（-5），系统即按屏幕缩放、以 GDI 方式清晰放大这些窗口
@@ -1794,9 +1789,9 @@ def patch_extra_link(data: bytearray) -> bytearray:
 # 这些导出是「调用方清栈」（函数末尾为裸 ret），所以桩也以裸 ret 返回；
 # 真实函数调用后由桩 add esp,8 清掉自压的实参副本。桩为位置无关代码，
 # 全部状态在栈上（可重入/多线程安全）；PSET 指针惰性解析后存 .cave。
-DPI_WRAP_REQ_OFF = 0x170      # request 包装桩（0x170-0x1F7 空闲，须 < 0x1F8）
-DPI_WRAP_LOAD_OFF = 0x1F7C    # load 包装桩（0x1F7C-0x1FFF 空闲，须 ≤ 0x2000）
-DPI_WRAP_DATA_OFF = 0xB0      # 数据：PSET(+0) / "user32.dll"(+4) / "SetThreadDpiAwarenessContext"(+0x10)
+DPI_WRAP_REQ_OFF = 0x2000     # request 包装桩（F1 区；下一项 load 包装在 0x20A0）
+DPI_WRAP_LOAD_OFF = 0x20A0    # load 包装桩（F1 区；下一项拖动包装在 0x2140）
+DPI_WRAP_DATA_OFF = 0x2290    # 数据：PSET(+0) / "user32.dll"(+4) / "SetThreadDpiAwarenessContext"(+0x10)
 DPI_WRAP_IAT_GMH = 0x4B31E4   # GetModuleHandleA 的 IAT 槽（VA，首选基址 0x400000）
 DPI_WRAP_IAT_GPA = 0x4B31E0   # GetProcAddress 的 IAT 槽（VA）
 DPI_WRAP_PSET = 0x00
@@ -1886,7 +1881,7 @@ def _build_dpi_wrap_stub(stub_va, data_va, target_va):
 # 窗口被系统虚拟化后，拖动模态循环与线程感知不一致会失效；这里把 6 个
 # SendMessageA 调用改指向包装桩：整个调用（含模态拖动循环）期间线程置 GDISCALED，
 # 结束后还原。调用点参数为 (hwnd, msg, wparam, lparam) 4 个 dword，桩以 ret 16 返回。
-DPI_DRAG_STUB_OFF = 0x2000    # 拖动包装桩（cave 扩到 0x2200 后的新增空间）
+DPI_DRAG_STUB_OFF = 0x2140    # 拖动包装桩（F1 区；下一项系统字体包装在 0x21E0）
 DPI_DRAG_SLOT_SM = 0x4B35A8   # SendMessageA 的 IAT 槽（VA）
 DPI_DRAG_CALL_ORIG = 0x406F2C  # 原调用目标（SendMessageA 跳板）
 DPI_DRAG_CALLS = (0x46326D, 0x46755E, 0x468C56, 0x46D615, 0x46EC75, 0x4704DE)
@@ -1969,6 +1964,7 @@ def _build_drag_wrap_stub(stub_va, data_va):
 
 
 def patch_dpi_drag(data: bytearray) -> bytearray:
+    """把 6 处 SC_DRAGMOVE 的 SendMessageA 调用改为包装桩（拖动期间线程 GDISCALED）。"""
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
     opt_size = _u16(data, e + 20)
@@ -2007,7 +2003,7 @@ def patch_dpi_drag(data: bytearray) -> bytearray:
 # “系统字体初始化”调用（0x44E024）改指向包装桩：调用期间线程置 UNAWARE_GDISCALED，
 # 取到 96dpi 规格的系统字体，与其它控件一致；结束后还原。
 DPI_SYSFONT_ENABLE = True
-DPI_SYSFONT_STUB_OFF = 0x2200
+DPI_SYSFONT_STUB_OFF = 0x21E0
 DPI_SYSFONT_FUNC = 0x44E024
 DPI_SYSFONT_CALLS = (0x44D946, 0x44EEED)
 
@@ -2127,7 +2123,7 @@ def patch_dpi_sysfont(data: bytearray) -> bytearray:
 CRPARAMS_HREDRAW_ENABLE = True
 CRPARAMS_SITE = 0x4352C1
 CRPARAMS_ORIG = bytes.fromhex('FF 91 90 00 00 00')   # call [ecx+0x90]（ecx=虚表，调用方已设）
-CRPARAMS_STUB_OFF = 0x22C0
+CRPARAMS_STUB_OFF = 0x2260
 
 
 def _build_createparams_stub():
@@ -2174,6 +2170,7 @@ def patch_createparams_hredraw(data: bytearray) -> bytearray:
 
 
 def patch_dpi_wrap(data: bytearray) -> bytearray:
+    """把 load/request 两个导出经 EAT 重定向到包装桩（期间线程 UNAWARE_GDISCALED）。"""
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
     opt_size = _u16(data, e + 20)
@@ -2232,7 +2229,7 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
         dv = DPI_WRAP_IB + cave_rva + DPI_WRAP_DATA_OFF
         tv = DPI_WRAP_IB + frva
         stub = _build_dpi_wrap_stub(sv, dv, tv)
-        limit = (0x1F8 if nm == 'request' else 0x2000)
+        limit = (DPI_WRAP_LOAD_OFF if nm == 'request' else DPI_DRAG_STUB_OFF)
         if len(stub) > limit - off_:
             raise RuntimeError(f'DPI 包装：{nm} 桩过长 {len(stub)}')
         if any(data[cave_raw + off_: cave_raw + off_ + len(stub)]):
@@ -2244,7 +2241,9 @@ def patch_dpi_wrap(data: bytearray) -> bytearray:
     return data
 
 
-# ------------------------------------------------------------- AITXT 加密
+# ----------------------------------------------------------------------------
+# 1.2 AITXT 词库重加密（整块反转 + MT19937 密钥流；资源本体直写）
+# ----------------------------------------------------------------------------
 # 算法：1) 整块反转
 #       2) 与密钥流异或：keystream = MT19937(seed2) rand(0x7FFFFFFF) & 0xFF
 #       seed2 = 以 9821 为种子的 MT19937 取 Random(0x7FFFFFFF) 后，
@@ -2334,7 +2333,9 @@ def gbk_bytes(text):
     return bytes(out)
 
 
-# ------------------------------------------------------------- PE 定位
+# ============================================================================
+# 0. 公共工具（PE 定位与读写：rva_off / 节遍历）
+# ============================================================================
 
 def _u16(b, o):
     return struct.unpack_from('<H', b, o)[0]
@@ -2391,6 +2392,7 @@ def find_aitxt(data):
 
 
 def patch_aitxt(data: bytearray) -> bytearray:
+    """1.2 AITXT：读取 aitxt_translated.txt，GBK 编码 + 加密后写回资源（round-trip 校验）。"""
     text_path = os.path.join(BASE, 'aitxt_translated.txt')
     if not os.path.exists(text_path):
         raise RuntimeError(f'{text_path} 不存在，请先运行 build_from_csv.py')
@@ -2415,7 +2417,7 @@ def patch_aitxt(data: bytearray) -> bytearray:
 
 
 # ============================================================================
-# 退出崩溃修复层（定稿：EAT 重定向 + DllMain detach 归还）
+# 6.1 退出/重载/人格切换修复（EAT 重定向存根 + V7 DllMain 归还）
 # ----------------------------------------------------------------------------
 # 背景：SSP 退出/重载时，first.dll 卸载后残留的"僵尸活动"（窗口消息派发、收尾
 #       遗留调用）会执行到已卸载模块的代码上（0x1476a/0x7474 一族）；而提前
@@ -2437,23 +2439,25 @@ def patch_aitxt(data: bytearray) -> bytearray:
 #      切到别的 SHIORI 人格、退出 SSP 全都覆盖（不依赖"下一次 load"）。
 #
 # 布局（.cave 固定偏移）：
-#   0x2400  存根（开头先清扫一轮 + 切-5/存属性 + 双销毁 + call 完好入口 + 跳收尾）
-#   0x226A  收尾例程（只断路；不恢复 DPI）
-#   0x7500  枚举回调（断路：本模块范围 + 监控窗类名）
-#           0x7600 类名缓冲 / 0x7660 "Tanalogclockform" / 0x7680 "Tcpuloadform"
-#   0x23F4  上下文暂存槽 4B（存根写；供 SetPropA 转存窗口属性）
-#   0x2640  V7 归还桩 / 0x2700 V7 入口跳板（DllMain detach 归还）
-#   0x2600  窗口类名 / 0x2630 属性名 "dpictx"（卸载存根与归还桩共用）
+#   0x2330  存根（开头先清扫一轮 + 切-5/存属性 + 双销毁 + call 完好入口 + 跳收尾）
+#   0x2300  收尾例程（只断路；不恢复 DPI）
+#   0x2570  枚举回调（断路：本模块范围 + 监控窗类名）
+#           0x2610 类名缓冲 / 0x2660 "Tanalogclockform" / 0x2680 "Tcpuloadform"
+#   0x2320  上下文暂存槽 4B（存根写；供 SetPropA 转存窗口属性）
+#   0x2490  V7 归还桩 / 0x2550 V7 入口跳板（DllMain detach 归还）
+#   0x2440  窗口类名 / 0x2480 属性名 "dpictx"（卸载存根与归还桩共用）
 # ============================================================================
 EXITFIX_ENABLE = True
-EXITFIX_STUB_OFF = 0x2400        # 存根
-EXITFIX_POST_OFF = 0x226A        # 收尾例程（teardown 返回后执行）
-EXITFIX_CB_OFF   = 0x7500        # 枚举回调（断路：本模块范围 + 监控窗类名）
-EXITFIX_CB2_BUF  = 0x7600        # 类名缓冲（64B -> 0x763F）
-EXITFIX_CB2_TA   = 0x7660        # "Tanalogclockform\0"（17B）
-EXITFIX_CB2_TI   = 0x7680        # "Tcpuloadform\0"（13B）
-EXITFIX_PSET_OFF = 0xB0          # .cave 高分屏数据区 +0x00：PSET 指针槽（包装桩惰性解析）
-EXITFIX_CTX_STASH = 0x23F4       # 旧 DPI 上下文暂存槽（存根写；供 SetPropA 转存 SSPMAIN 属性）
+EXITFIX_STUB_OFF = 0x2330        # 存根
+EXITFIX_POST_OFF = 0x2300        # 收尾例程（teardown 返回后执行）
+EXITFIX_CB_OFF   = 0x2570        # 枚举回调（断路：本模块范围 + 监控窗类名）
+EXITFIX_CB2_BUF  = 0x2610        # 类名缓冲（64B -> 0x264F）
+EXITFIX_CB2_TA   = 0x2660        # "Tanalogclockform\0"（17B）
+EXITFIX_CB2_TI   = 0x2680        # "Tcpuloadform\0"（13B）
+EXF_CLASS_OFF    = 0x2440        # SSPMAIN 窗类名（V7 与存根共用）
+EXF_PROP_OFF     = 0x2480        # "dpictx" 属性名
+EXITFIX_PSET_OFF = DPI_WRAP_DATA_OFF  # 高分屏数据区 +0x00：PSET 指针槽（包装桩惰性解析）
+EXITFIX_CTX_STASH = 0x2320       # 旧 DPI 上下文暂存槽（存根写；供 SetPropA 转存 SSPMAIN 属性）
 EXITFIX_UNLOAD_RVA    = 0xAA234  # 原 unload 入口 RVA（入口保持原样；EAT 重定向到存根）
 EXITFIX_UNLOAD_PROLOG = bytes.fromhex('55 8B EC 51 53')   # 原 unload 入口序言
 
@@ -2472,8 +2476,8 @@ _EXF_EXPECT_CAVE_RVA = 0xE2000   # .cave 期望 RVA（add_cave_section 的固定
 # —— V7：DllMain DLL_PROCESS_DETACH 结束时归还 DPI 上下文（人格切换场景）——
 ENTRY_RVA = 0xAC704              # 原 DllMain 入口 RVA
 ENTRY_PROLOG = bytes.fromhex('55 8B EC 83 C4 B4')
-CTXDETACH_STUB_OFF = 0x2640      # 归还桩
-CTXDETACH_TRAMP_OFF = 0x2700     # 入口跳板（原序言 6 字节 + 跳回入口+6）
+CTXDETACH_STUB_OFF = 0x2490      # 归还桩
+CTXDETACH_TRAMP_OFF = 0x2550     # 入口跳板（原序言 6 字节 + 跳回入口+6）
 
 
 def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
@@ -2516,14 +2520,14 @@ def _exitfix_stub(stub_va: int, cave_va: int) -> bytes:
     # --- 旧上下文经暂存槽写入 SSPMAIN 的 "dpictx" 属性（卸载期临时保存，供 V7 归还桩读回）---
     b += b'\x60'                                      # pushad
     b += b'\x6A\x00'                                  # push 0
-    b += b'\x8D\x83' + C(0x2600)                     # lea eax,[class]
+    b += b'\x8D\x83' + C(EXF_CLASS_OFF)              # lea eax,[class]
     b += b'\x50'                                      # push eax
     b += b'\xFF\x93' + L(0x4B3704)                   # call [FindWindowA]
     b += b'\x85\xC0'                                  # test
     _j1 = len(b); b += b'\x74\x00'                    # jz .out
     b += b'\x8B\x93' + C(EXITFIX_CTX_STASH)          # mov edx,[stash]
     b += b'\x52'                                      # push edx
-    b += b'\x8D\x93' + C(0x2630)                     # lea edx,[prop]
+    b += b'\x8D\x93' + C(EXF_PROP_OFF)               # lea edx,[prop]
     b += b'\x52'                                      # push edx
     b += b'\x50'                                      # push eax (hwnd)
     b += b'\xFF\x93' + L(0x4B3580)                   # call [SetPropA]
@@ -2654,7 +2658,9 @@ def _exitfix_cb(cave_va: int) -> bytes:
     return bytes(b)
 
 
-# ------------------------------------------------------------- first.dll（ULW 命中掩码）
+# ============================================================================
+# 6.5 ULW 命中掩码 + 跨 100% 分层表面刷新
+# ============================================================================
 # 幽灵的透明监控窗（模拟时钟 Tanalogclockform / 文字信息窗 Tcpuloadform）是
 # WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha 窗口：系统按图层 alpha 做鼠标
 # 命中判定（alpha==0 穿透）。100% 缩放下判定与显示一一对应；DPI 虚拟化（≠100%）下
@@ -3221,7 +3227,7 @@ def patch_exit_fix(data: bytearray) -> bytearray:
     def expect_zero(off, ln, what):
         if any(data[cave_raw + off:cave_raw + off + ln]):
             raise RuntimeError('exitfix：%s @cave+0x%X 非零，疑似布局冲突' % (what, off))
-    expect_zero(EXITFIX_POST_OFF, 0x22C0 - EXITFIX_POST_OFF, '收尾例程区')  # 0x22C0 起为既有桩，避开
+    expect_zero(EXITFIX_POST_OFF, EXITFIX_STUB_OFF - EXITFIX_POST_OFF, '收尾/暂存区')
     expect_zero(EXITFIX_CB_OFF, 0x200, '回调区(含类名缓冲/字符串)')
     expect_zero(EXITFIX_CTX_STASH, 4, '上下文暂存槽')
     if any(data[cave_raw + EXITFIX_STUB_OFF:cave_raw + EXITFIX_STUB_OFF + 0x100]):
@@ -3254,14 +3260,16 @@ def patch_exit_fix(data: bytearray) -> bytearray:
     # —— 说明：不改导出表 EAT。SSP 经导出表调用到原入口 0xAA234，
     #         再由上面的入口内联跳转进入存根（与验证版设计一致）。
     # —— 归还统一由 V7（patch_ctx_return_on_detach，DllMain detach 归还）负责 ——
-    # load 导出保持指向 load 包装（cave+0x1F7C）；此处只写归还所需的类名/属性名。
-    data[cave_raw + 0x2600: cave_raw + 0x2600 + 45] = b'SSPMAIN-3145fdab-2ee0-4158-a1ce-832b553ad790\x00'
-    data[cave_raw + 0x2630: cave_raw + 0x2630 + 7] = b'dpictx\x00'
+    # load 导出保持指向 load 包装（cave+DPI_WRAP_LOAD_OFF）；此处写归还所需的类名/属性名。
+    if any(data[cave_raw + EXF_CLASS_OFF:cave_raw + CTXDETACH_STUB_OFF]):
+        raise RuntimeError('exitfix：类名/属性名区非零')
+    data[cave_raw + EXF_CLASS_OFF: cave_raw + EXF_CLASS_OFF + 45] = b'SSPMAIN-3145fdab-2ee0-4158-a1ce-832b553ad790\x00'
+    data[cave_raw + EXF_PROP_OFF: cave_raw + EXF_PROP_OFF + 7] = b'dpictx\x00'
     _er = _u32(data, opt + 96)
     _efo = rva_off(_er)
     _efun = rva_off(_u32(data, _efo + 28))
-    if _u32(data, _efun + 1 * 4) != cave_rva + 0x1F7C:
-        raise RuntimeError('load EAT 应为 load 包装 0x1F7C，实为 0x%X' % _u32(data, _efun + 1 * 4))
+    if _u32(data, _efun + 1 * 4) != cave_rva + DPI_WRAP_LOAD_OFF:
+        raise RuntimeError('load EAT 应为 load 包装 0x%X，实为 0x%X' % (DPI_WRAP_LOAD_OFF, _u32(data, _efun + 1 * 4)))
     print('退出崩溃修复层已应用: 存根(含DPI上下文切换)+收尾+断路 (cave+0x%X/0x%X/0x%X)，unload 入口内联跳转指向存根'
           % (EXITFIX_STUB_OFF, EXITFIX_POST_OFF, EXITFIX_CB_OFF))
     return data
@@ -3346,12 +3354,12 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
     b += b'\x8B\x83' + C(EXITFIX_PSET_OFF)              # mov eax,[pset]
     b += b'\x85\xC0'
     RJ(0x75, 'have')                                    # jnz .have
-    b += b'\x8D\x83' + C(0xB4)                          # lea eax,[user32.dll]
+    b += b'\x8D\x83' + C(DPI_WRAP_DATA_OFF + DPI_WRAP_USER32)    # lea eax,[user32.dll]
     b += b'\x50'
     b += b'\xFF\x93' + AL(0x4B31E4)                     # call [GMH]
     b += b'\x85\xC0'
     RJ(0x74, 'out')                                     # jz .out
-    b += b'\x8D\x93' + C(0xC0)                          # lea edx,[SetThreadDpiAwarenessContext]
+    b += b'\x8D\x93' + C(DPI_WRAP_DATA_OFF + DPI_WRAP_SETNAME)  # lea edx,[SetThreadDpiAwarenessContext]
     b += b'\x52\x50'
     b += b'\xFF\x93' + AL(0x4B31E0)                     # call [GPA]
     b += b'\x85\xC0'
@@ -3359,12 +3367,12 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
     b += b'\x89\x83' + C(EXITFIX_PSET_OFF)              # mov [pset],eax
     LAB('have')
     b += b'\x6A\x00'                                    # push 0
-    b += b'\x8D\x83' + C(0x2600)                        # lea eax,[类名]
+    b += b'\x8D\x83' + C(EXF_CLASS_OFF)                 # lea eax,[类名]
     b += b'\x50'
     b += b'\xFF\x93' + AL(0x4B3704)                     # call [FindWindowA]
     b += b'\x85\xC0'
     RJ(0x74, 'out')
-    b += b'\x8D\x93' + C(0x2630)                        # lea edx,[属性名]
+    b += b'\x8D\x93' + C(EXF_PROP_OFF)                  # lea edx,[属性名]
     b += b'\x52\x50'
     b += b'\xFF\x93' + AL(0x4B368C)                     # call [GetPropA]
     b += b'\x85\xC0'
@@ -3394,7 +3402,8 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
     return data
 
 
-# ============================================================ IME 修复层（新版微软拼音）
+# ============================================================================
+# 6.4 IME 修复层（新版微软拼音；两门控 + 三重修复 + 感知修正）
 # 现象与根因（详见 docs/窗口分析及修复.md 第 9 节）：
 #   GDISCALED(96dpi 虚拟)窗口下：候选框位置偏移、组字窗字体过小/尺寸不随文自适应、相对偏移。
 #   根因：MSCTF 按虚拟坐标计算锚点；组字窗绘制用缓存字体
@@ -3423,9 +3432,9 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #     目标函数于安装时经 GetModuleHandleA/GetProcAddress 解析（IAT 槽 0x4B31E4/0x4B31E0）。
 #   - 还原安全：所有被改站点在安装时保存"运行时原字节"，卸载写回保存值（含重定位值，绝不写死）。
 #   cave 布局（cave 内偏移）：数据 0x2810 | CTS 桩 0x2A00 | SEL 桩 0x2C00 | 跳板 0x3200/0x320C
-#   | 安装 0x3300 | hook1 0x36E0 | unhook1 0x3760 | 载入/卸载包装 0x3800/0x3840 | 字符串 0x3900
+#   | 安装 0x3300 | hook1 0x3700 | unhook1 0x3780 | 载入/卸载包装 0x3800/0x3840 | 字符串 0x3900-0x39FC
 #   | 感知修正层 0x5860-0x5DC0 | 组字窗桩 0x5E80 | 还原 0x6000 | 空态桩 0x7000
-#   （0x3B00 打字屏蔽桩、0x4000 重力语变换桩为其他功能，勿动）
+#   （0x3A10 打字屏蔽桩、0x3C00 重力语变换桩为其他功能，勿动）
 
 IME_BASE_OFF = 0x2810
 IME_PTR_CTS = 0x00
@@ -3465,7 +3474,7 @@ IME_T5_CTS = 0xF4
 IME_T5_SEL = 0xF8
 IME_HOSTOFF = 0x120    # u8：1=unaware 宿主（如 MATERIA）→ IME 层整体 no-op
 IME_HOSTVAL = 0x124    # u32：GetProcessDpiAwareness 输出暂存
-# ---- 三重修复站点/槽位 ----
+# ---- 6.4a 三重修复站点/槽位（CTS/SEL/组字窗/空态光标） ----
 IME_STUB_CW = 0x5E80        # 组字窗位置修复桩（msctf+0x47749）
 IME_SITE_CW = 0x47749       # msctf RVA（原 6B：FF 15 18 50 10 10，运行时已重定位）
 IME_ORIG_CW = 0x18C         # 组字窗站点原 6 字节暂存（安装时保存运行时值）
@@ -3488,6 +3497,7 @@ IME_RESTORE = 0x6000    # 还原例程（尾部空段；槽位 0x6000-0x6400）
 IME_WRAP_LOAD = 0x3800
 IME_WRAP_UNLOAD = 0x3840
 IME_STR = 0x3900
+IME_STR_END = 0x3A00                # IME 字符串区上界（实测内容止于 0x39FC；与 PREFIX_OFF 无关联）
 # ---- 感知修正层（根治件）：截答 textinputframework 的窗口感知查询 ----
 # 现象链：GDISCALED 幽灵窗口下，msctf 算出的锚点已是物理值；新版微软拼音的
 #   进程内管线（textinputframework.dll）按窗口感知级别判断"未感知应用"再补一次
@@ -3519,9 +3529,9 @@ AWRFIX_CHAIN_UNLOAD = 0x5DA0        # call 还原两例程（本层 + IME）
 IME_CAVE_SIZE = 0x8000              # 0x6000（重力语桩）→ 0x8000：尾部空段放修复桩（组字窗/空态/还原）
 IME_HOOK1 = 0x3700
 IME_UNHOOK1 = 0x3780
-IME_LOAD_WRAP_ORIG = 0x1F7C
-IME_UNLOAD_STUB_ORIG = 0x2400
-# ---- 后半 ----
+IME_LOAD_WRAP_ORIG = 0x20A0
+IME_UNLOAD_STUB_ORIG = 0x2330
+# ---- 6.4b band2 常量（AWRFIX/组字窗桩/还原/空态桩） ----
 
 
 GPA_IAT = 0x4B31E0
@@ -4292,7 +4302,7 @@ def _ime_wrap_build(ta_va, call_va, jmp_va):
     return o.finish()
 
 
-# ====================== 接线（并入 patch_dll.py 后由其调用）======================
+# ---- 6.4c 子构建器（安装/还原/包装/跳板；由 build_ime_layer 调用） ----
 def _ime_tr_body(cv, stub_off, t5_off):
     """系统函数跳板：原序言 5B + push [T5 槽] + ret（T5 由安装例程填 target+5）。"""
     anchor = cv + stub_off + 6
@@ -4301,7 +4311,7 @@ def _ime_tr_body(cv, stub_off, t5_off):
 
 
 def build_ime_layer(data):
-    """构建全部 IME 组件并接线（返回 data）。宿主需提供 _u32/_u16/struct/data。"""
+    """构建全部 IME 组件并写入 .cave 的 IME 段（含 EAT 安装/卸载包装接线；返回 data）。"""
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
     opt = e + 24
@@ -4321,7 +4331,7 @@ def build_ime_layer(data):
     # 零区预检（0x2810-0x3900）
     if any(data[cave_raw + IME_BASE_OFF: cave_raw + IME_STR]):
         raise RuntimeError('IME：数据/桩区非零，疑似布局冲突')
-    if any(data[cave_raw + IME_STR: cave_raw + 0x3A00]):
+    if any(data[cave_raw + IME_STR: cave_raw + IME_STR_END]):
         raise RuntimeError('IME：字符串区非零')
 
     def put(off, blob):
@@ -4334,7 +4344,7 @@ def build_ime_layer(data):
                                % (tag, len(blob), limit_off - off, off, limit_off))
         put(off, blob)
 
-    put_ck(IME_STR, 0x3A00, IME_STR_BLOB, '字符串区')
+    put_ck(IME_STR, IME_STR_END, IME_STR_BLOB, '字符串区')
     put_ck(IME_STUB_CTS, IME_STUB_SEL, _ime_cts_stub(cave_va + IME_STUB_CTS, data_va, cave_va + IME_TR_CTS), 'CTS 桩')
     put_ck(IME_STUB_SEL, 0x3000, _ime_sel_stub(cave_va + IME_STUB_SEL, data_va, cave_va + IME_TR_SEL), 'SEL 桩')
     if any(data[cave_raw + IME_STUB_CW: cave_raw + IME_RESTORE]) or \
@@ -4374,7 +4384,7 @@ def build_ime_layer(data):
                                                      cave_va + AWRFIX_CHAIN_UNLOAD,
                                                      cave_va + IME_UNLOAD_STUB_ORIG), '卸载包装')
 
-    # EAT 重定向：load（既有断言：索引 1 = cave+0x1F7C）；unload（找 = cave+0x2400）
+    # EAT 重定向：load（既有断言：索引 1 = cave+DPI_WRAP_LOAD_OFF）；unload（找 = cave+EXITFIX_STUB_OFF）
     _eo = _u32(data, opt + 96)
     _efo_off = None
     for i in range(nsec):
@@ -4393,21 +4403,21 @@ def build_ime_layer(data):
             _fun = _u32(data, off2 + 20) + (_af - va2)
     nfun = _u32(data, _efo_off + 20)
     if _u32(data, _fun + 4) != cave_rva + IME_LOAD_WRAP_ORIG:
-        raise RuntimeError('IME：load EAT 不符（应=cave+0x1F7C）')
+        raise RuntimeError('IME：load EAT 不符（应=cave+0x%X）' % IME_LOAD_WRAP_ORIG)
     struct.pack_into('<I', data, _fun + 4, cave_rva + IME_WRAP_LOAD)
     for i in range(nfun):
         if _u32(data, _fun + 4 * i) == cave_rva + IME_UNLOAD_STUB_ORIG:
             struct.pack_into('<I', data, _fun + 4 * i, cave_rva + IME_WRAP_UNLOAD)
             break
     else:
-        raise RuntimeError('IME：未找到 unload EAT（=cave+0x2400）')
+        raise RuntimeError('IME：未找到 unload EAT（=cave+0x%X）' % IME_UNLOAD_STUB_ORIG)
     print('IME 层已应用: 三重修复(空态/组字窗位置/字号) + 感知修正层 + 安装/还原 + 载入/卸载包装 + EAT 重定向'
           '（cave+0x%X..0x%X）' % (IME_BASE_OFF, AWRFIX_CHAIN_UNLOAD + 0x20))
     return data
 
 
 # ============================================================================
-# 键盘修复层（Tab 切换 / Alt+助记符）：复刻宿主泵缺失的 VCL 键预处理
+# 6.2 键盘修复（Tab 切换 / Alt+助记符；复刻宿主泵缺失的 VCL 键预处理）
 # ----------------------------------------------------------------------------
 # 背景：ssp.exe 的消息泵 JWinThread::TranslateDispatchMessage(0x5A72A0) 只有
 #   TranslateMessage + DispatchMessageW；DLL 自带 VCL 泵（TApplication.ProcessMessage
@@ -4417,7 +4427,9 @@ def build_ime_layer(data):
 #     → 控件 CNKeyDown → CM_DIALOGKEY(0xB01E) → 窗体 CMDlgKey → SelectNext
 #     （VCL 控件树自身顺序，跨容器/助记符天然正确）；命中返回非 0；
 #   - IsDlgMsg(0x44F870) = IsDialogMessageA([App+0xA0], MSG)：SSP 宿主不维护
-#     [App+0xA0]（MATERIA 由宿主 0xB031 通知维护），这里补写消息窗根窗体兜底。
+#     [App+0xA0]，句柄为 0 时函数内部空转；【绝不代写该句柄】——曾把消息窗
+#     根窗体写进去 → IsDialogMessageA 接管该窗全部按键分发、绕过 TranslateMessage
+#     与输入法管线（打字乱码）。Tab/Alt 实际由 IsKeyMsg 处理。
 # 方案：挂钩原 load 入口(0xAA374) → 安装桩解析真 user32 函数（绕 SSP 对 ghost DLL
 #   IAT 的假桩）→ 宿主门控（SSP 主窗存在且属本进程，否则整层 no-op）→ 取主窗线程
 #   装 WH_GETMESSAGE 钩子。钩子对 "PM_REMOVE + 0x100..0x109 + 消息窗类属本模块"
@@ -4710,6 +4722,11 @@ def patch_kbd_fix(data: bytearray) -> bytearray:
     return data
 
 
+# ============================================================================
+# 主流程：构建（并可选部署）
+#   CSV 字符串 → 兼容补丁 → DFM → 3/4/5 区 → 6.3 DPI → AITXT → 6.1 退出
+#   → 6.5 ULW → 6.4 IME → 6.2 键盘 → 写文件 / 部署
+# ============================================================================
 BASE = os.path.dirname(os.path.abspath(__file__))
 DLL_IN = os.path.join(BASE, 'input', 'first.dll')
 CSV_IN = os.path.join(BASE, 'translated.csv')
@@ -4730,7 +4747,8 @@ for row in rows:
     off = int(row['Offset'].lstrip('0x'), 16)
     length = int(row['Length'])
     typ = row['Type']
-    enc = 'shift-jis' if off in SHIFTJIS_OFFSETS else 'gbk'
+    # 字符串一律按 GBK 写入（窗体 label 已由 Charset 补丁改为随 ACP 解释）
+    enc = 'gbk'
     try:
         raw = text.encode(enc)
     except UnicodeEncodeError:
