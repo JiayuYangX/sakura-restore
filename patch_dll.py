@@ -55,14 +55,18 @@ first.dll 汉化与兼容补丁 · 一键构建脚本
 import csv, hashlib, os, sys, struct, shutil, unicodedata
 
 # ============================================================================
-# 2. SHIORI 兼容性修复（NOTIFY 分发 / 诱导模式长度清零）
+# 直接字节补丁表（2. SHIORI 兼容 + 4. 视力倒计时显示对齐）
 #    PATCHES = (文件偏移, 原始字节, 替换字节)：写入前逐字节校验原值
 # ============================================================================
 PATCHES = [
-    # 1. NOTIFY -> 按 GET 分发
+    # 2.1 NOTIFY -> 按 GET 分发
     (0x719E9, bytes.fromhex('0F 85 AF 7E 00 00'), b'\x90' * 6),
-    # 2. r"\![enter,inductionmode]" 字符串长度 23 -> 0
+    # 2.2 r"\![enter,inductionmode]" 字符串长度 23 -> 0
     (0x79E08, bytes.fromhex('17 00 00 00'), bytes.fromhex('00 00 00 00')),
+    # 4.x 视力检查：倒计时窗初值 30 秒 -> 15 秒，与响应脚本的输入框超时
+    #     `\![open,inputbox,OnEyesightgameInput,15000]`（15 秒）对齐。
+    #     文件 0x72CB1 = VA 0x4738B1（OnEyesightgameNext 分支 mov edx,0x1E 的立即数低字节）。
+    (0x72CB1, bytes.fromhex('1E'), bytes.fromhex('0F')),
 ]
 
 

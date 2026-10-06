@@ -519,7 +519,7 @@ Offset,Length,Type,Text
 0x64B74,51,code,可执行文件的完整路径（可通过拖放文件输入）
 0x653E8,51,code,\0\s1唔。\w8\w8数量真多啊。\w8\w8\n\n\s[20]
 0x65424,22,code,……\w8\w8好。\w8\w8
-0x65458,10,code,\n\n好嘞。
+0x65458,10,code,\n\n这样。
 0x65480,12,code,面骰子
 0x65498,24,code,枚……\w8\w8好。\w8\w8
 0x65690,179,code,\0\s0也就是所谓的骰子……\w8\w8吧。\w8\w8\1\s0是骰子呢。\w8\w8\0\n\n基本上就是在编辑框里输入骰子表达式，然后按 Enter 即可。\w8\w8\n\n比如 2d6+10 之类的，还可以进行加减运算哦。
@@ -729,7 +729,7 @@ Offset,Length,Type,Text
 0x7A5B4,14,code,樱屋卡
 0x7A5CC,14,code,数码子屋卡
 0x7A5F8,20,code,请让一下
-0x7A62C,40,code,MATERIA 设置窗口始终置顶显示
+0x7A62C,40,code,MATERIA 窗口始终置顶显示
 0x7A674,8,code,算了吧
 0x7A6A4,22,code,人格使用率图表
 0x7A704,22,code,对话框使用率图表
@@ -760,7 +760,7 @@ Offset,Length,Type,Text
 0x7AB2C,16,code,打字游戏
 0x7AB48,12,code,小樱问答
 0x7AB60,12,code,问答游戏
-0x7AB78,14,code,小樱视力测试
+0x7AB78,14,code,小樱视力检查
 0x7AB90,6,code,……？
 0x7ABB0,11,code,Todo 列表
 0x7ABD4,13,code,Notify 列表
@@ -994,7 +994,7 @@ Offset,Length,Type,Text
 0x7E2B8,34,code,\0乌纽别多嘴！
 0x7E2F4,109,code,"\0\s[20]获取IP地址中……\w8\w8\n\n\![execute,http-get,""http://usada.sakura.vg/ip.php""]\![raise,On_IP_got]"
 0x7E394,25,code,\0\s0获取完成。\w8\w8\n\n
-0x7E3C8,16,code,好嘞。\w8\w8\n\n
+0x7E3C8,16,code,这样。\w8\w8\n\n
 0x7E3E4,32,code,要复制到剪贴板吗？\n\n
 0x7E410,36,code,"\![*]\q[好的,executecopyipaddress]\n"
 0x7E440,24,code,"\![*]\q[不用了,cancel]\n"
@@ -1038,7 +1038,7 @@ Offset,Length,Type,Text
 0x7EF30,58,code,"\![*]\q[小樱打字,OnTypinggameEnter]\_q - New!\_q\n"
 0x7EF74,45,code,"\![*]\q[小樱打字,OnTypinggameEnter]\n"
 0x7EFAC,35,code,"\![*]\q[小樱问答,OnQuizEnter]\n"
-0x7EFD8,34,code,"\![*]\q[小樱视力测试,eyesight]\n"
+0x7EFD8,34,code,"\![*]\q[小樱视力检查,eyesight]\n"
 0x7F004,26,code,"\![*]\q[取消,cancel]"
 0x7F068,17,code,\0\s0哪一个？\n
 0x7F084,52,code,"\![*]\q[人格使用率 - 合计,rateofusegraphtotal]\n"
