@@ -29,7 +29,8 @@ first.dll 汉化与兼容补丁 · 一键构建脚本
     2 SHIORI 兼容  PATCHES（NOTIFY 分发、诱导模式长度清零）
     3 链接/锚点    _build_linkify_stub（海原雄山）/ _build_url_stub（RSS 气泡保留）
     4 菜单逻辑     _build_resp_monitor_stub（桩A）/ _build_dc_status_stub（桩B）/
-                   _build_cancel_helper / _build_closebox_stub / _build_typing_closeq_stub
+                   _build_cancel_helper / _build_closebox_stub / _build_typing_closeq_stub /
+                   patch_timer_restore（菜单计时显示恢复）
     5 对话替换     _build_typing_gate_stub / _build_gravity_map + _build_gravity_stub
     6 窗口修复     6.1 patch_exit_fix + patch_ctx_return_on_detach
                    6.2 patch_kbd_fix
@@ -48,8 +49,9 @@ first.dll 汉化与兼容补丁 · 一键构建脚本
     0x3A10-0x4E52  5 对话   打字闸门/重力语桩/重力映射表
     0x5860-0x7400  6.4 IME band2（AWRFIX/组字窗/还原/空态光标）
     0x6400-0x6A9C  6.2 键盘
+    0x7500-0x7700  4 计时统一闸门（提交/退出/到点三条关闭路径共用一个桩）
     0x7700-0x7F60  6.5 ULW/WL（上屏桩/WndProc/掩码数据）
-    空闲区：0x1E50-0x2000、0x2690-0x2810、0x4E60-0x5860、0x7500-0x7700
+    空闲区：0x1E50-0x2000、0x2690-0x2810、0x4E60-0x5860
 ===============================================================================
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
@@ -321,6 +323,7 @@ URL_RESP_PREFIX = rb'\C\![open,browser,'
 #   6.1 退出 0x2300 收尾例程 | 0x2320 上下文暂存槽 | 0x2330 存根 | 0x2440 窗类名 | 0x2480 属性名
 #           0x2490 V7 归还桩 | 0x2550 V7跳板 | 0x2570 枚举回调 | 0x2610 类名缓冲 | 0x2660/0x2680 类名串
 #   固定层   0x2810-0x39FC IME band1 | 0x5860-0x7400 IME band2 | 0x6400-0x6A9C 键盘 | 0x7700-0x7F60 ULW/WL
+#   4 计时   0x7500 统一闸门桩（提交/退出/到点三条关闭路径共用一个挂钩）
 # .cave 节大小 0x8000。
 
 CLS_STR_OFF = 0x200                # 类名串+dstr 块（Ttypinggameform/Teyesightform/Tcountdownform + 空提交 dstr）
@@ -1447,6 +1450,10 @@ def _build_closebox_stub(cave_va):
       （打字框的 CloseQuery 需先放行，由 CloseQuery 跳板在 GAMELEFT 时处理；
        另外两个窗体本来就无拦截）。全程没有键盘消息 → 无编辑框回车提示音。
       PostMessage 异步投递，不会死锁（同步调用是之前卡死的教训）。
+
+      【菜单计时例外】四功能共用倒计时窗；本桩不再给它发 WM_CLOSE，改调统一闸门
+      0x4ABD64（与提交/作答、倒计时到 0 同一入口）：计时在跑时它按剩余时间刷新显示
+      并跳过关闭；否则关闭（原逻辑）。
     """
     b = bytearray()
     fixups = []
@@ -1498,8 +1505,10 @@ def _build_closebox_stub(cave_va):
     label('eye')
     close_one(STR_EYE, 'cd')
     label('cd')
-    close_one(STR_CD, 'done')
-    label('done')
+    # 倒计时窗：改调统一闸门（0x4ABD64）——计时在跑时它恢复显示，否则关闭
+    _cg = len(b)
+    b.append(0xE8)
+    b.extend(struct.pack('<i', TIMER_GATE_FN - (cave_va + CLOSEBOX_OFF + _cg + 5)))
     b.extend(b'\x5F\x5E\x5A\x59\x58')                        # pop edi/esi/edx/ecx/eax
     b.append(0xC3)                                                # ret
     for kind, pos, name in fixups:
@@ -1532,7 +1541,7 @@ def _build_dc_status_stub(rva):
       3) 请求含 "passive"（被动模式：问答/打字/教程等）：
          - EYEBUSY=1（视力保护窗口）→ 吞掉（整局含反馈期，防双击打断
            响应末尾的 leave,passivemode）；
-         - 否则 → 菜单缓存（cave+0x960）非空则 LStrAsg 写回缓存菜单
+         - 否则 → 菜单缓存（cave+CACHE_OFF）非空则 LStrAsg 写回缓存菜单
            （方便点「退出」）；为空则吞掉（空缓存头 rc=0，不能做
            LStrAsg——见 3.2 坑一）；
       4) 非 passive：EYEBUSY=0（解除保护窗口）→ 清响应后跳 0x4782C5，
@@ -1784,7 +1793,157 @@ def patch_extra_link(data: bytearray) -> bytearray:
 
 
 # ----------------------------------------------------------------------------
-# 6.3 高分屏缩放（load/request 导出包装；拖动/系统字体/CS_HREDRAW 包装见下）
+# 4.x 菜单计时显示恢复：所有"关倒计时窗"的入口统一走 0x4ABD64 闸门
+# ----------------------------------------------------------------------------
+# 背景：问答(OnOpenquizInputBox)/打字(OnOpenTypingbox)/视力(OnEyesightgameNext)/
+#   菜单计时(timer3/4/5minutes) 四功能共用同一个倒计时窗（懒创建于 *(TIMER_G_SLOT)）。
+#   游戏启动会复用该窗并改写数值；三条关闭路径原本互不相同：
+#     ① 提交/作答：调 0x4ABD64（查槽后 Close 窗体）；
+#     ② 倒计时到 0：窗自己的 tick 内直接 Close(self)（0x46F553）；
+#     ③ 菜单「退出」：关窗体辅助桩给 Tcountdownform 发 WM_CLOSE。
+#   计时功能若仍在运行（[TIMER_G_DEADLINE] != 0），其倒计时显示会就此丢失
+#   （到点通知独立于窗，仍会触发；检查例程 0x4A7984）。
+# 方案：②③ 的调用点改调 ① 的同一个函数 0x4ABD64（提交路径本就走它），
+#   只在该函数上挂一个闸门桩（cave+TIMER_GATE_STUB_OFF，挂 0x4ABD69 以保留
+#   首指令、避开 .reloc）：
+#     - 计时在跑且剩余 > 0 → 按剩余 SetTime 恢复显示，不关窗；
+#     - 否则 → 复刻原逻辑 Close 窗体（无 OnClose → caHide，槽保持可复用）。
+# 剩余时间算法：rem = [TIMER_G_DEADLINE] - timeGetTime()（无符号；借位→0），
+#   折半换算后调 SetTime（eax=窗, edx=分, ecx=秒）。
+# 显示格式：M:SS.CC（百分秒 = [form+0x32C]/10；每 tick 按真实经过毫秒递减、
+#   每秒重置 999。启动值只能整分+秒——SetTime 无亚秒参数）。
+TIMER_RESTORE_ENABLE = True
+TIMER_GATE_HOOK_VA = 0x4ABD69         # 0x4ABD64+5：cmp [eax],0 / je（首指令保留）
+TIMER_GATE_HOOK_OFF = TIMER_GATE_HOOK_VA - 0x400C00
+TIMER_GATE_HOOK_ORIG = bytes.fromhex('83 38 00 74 0C')
+TIMER_GATE_STUB_OFF = 0x7500          # 闸门桩
+TIMER_GATE_FN = 0x4ABD64              # 统一闸门函数（关窗桩与 tick 改调它）
+TIMER_TICK_VA = 0x46F553              # 倒计时到 0 的自关闭（Tcountdownform.tick 内）
+TIMER_TICK_OFF = TIMER_TICK_VA - 0x400C00
+TIMER_TICK_ORIG = bytes.fromhex('8B C3 E8 82 D4 FD FF')   # mov eax,ebx / call Close
+
+TIMER_G_DEADLINE = 0x4ADD14           # timeGetTime 基准的截止时刻（0=未计时）
+TIMER_G_SLOT = 0x4ADFF8               # → "倒计时窗指针"槽（双重间接）
+TIMER_FN_TIME = 0x41F7C0              # winmm!timeGetTime 导入跳板
+TIMER_FN_SETTIME = 0x46F218           # (eax=窗, edx=分, ecx=秒) 设定并刷新
+TIMER_FN_CLOSE = 0x44C9DC             # TForm.Close（无 OnClose → caHide，槽可复用）
+
+
+def _build_timer_gate_stub(stub_va):
+    """统一闸门桩（cave+TIMER_GATE_STUB_OFF，挂 0x4ABD64+5）：
+
+    游戏提交/作答、倒计时到 0、菜单「退出」三条关闭路径都经由 0x4ABD64。
+    计时在跑且倒计时窗存在时按剩余时间 SetTime 刷新显示并跳过关闭；
+    否则复刻原逻辑（Close）。位置无关（ebx=运行时基址差）。
+    """
+    b = bytearray()
+    fix = []
+    lab = {}
+
+    def L(n):
+        lab[n] = len(b)
+
+    def r8(op, n):
+        b.append(op)
+        fix.append(('r8', len(b), n))
+        b.append(0)
+
+    def call(va):
+        off = len(b)
+        b.append(0xE8)
+        b.extend(struct.pack('<i', va - (stub_va + off + 5)))
+
+    b += b'\x53'                                            # push ebx
+    b += b'\xE8\x00\x00\x00\x00'                        # call $+5
+    b += b'\x5B'                                            # pop ebx
+    b += b'\x81\xEB' + struct.pack('<I', stub_va + 6)      # sub ebx, 链接期(pop)
+    b += b'\x8B\x83' + struct.pack('<i', TIMER_G_SLOT)     # mov eax,[ebx+slot]
+    b += b'\x8B\x00'                                       # mov eax,[eax]（窗；0=无）
+    b += b'\x85\xC0'                                       # test eax,eax
+    r8(0x74, 'ret')
+    b += b'\x8B\x8B' + struct.pack('<i', TIMER_G_DEADLINE) # mov ecx,[ebx+deadline]
+    b += b'\x85\xC9'                                       # test ecx,ecx
+    r8(0x74, 'close')                                        # 未计时 → 原关闭（eax=窗）
+    call(TIMER_FN_TIME)                                      # eax = timeGetTime()
+    b += b'\x8B\x93' + struct.pack('<i', TIMER_G_DEADLINE) # mov edx,[ebx+deadline]
+    b += b'\x29\xC2'                                       # sub edx,eax
+    r8(0x73, 'have')                                         # jnc（deadline>=now）
+    b += b'\x31\xD2'                                       # xor edx,edx（已超时→0）
+    L('have')
+    b += b'\x89\xD0'                                       # mov eax,edx（rem_ms）
+    b += b'\x31\xD2'                                       # xor edx,edx
+    b += b'\xB9\xE8\x03\x00\x00'                        # mov ecx,1000
+    b += b'\xF7\xF1'                                       # div ecx → eax=rem_s
+    b += b'\x89\xC1'                                       # mov ecx,eax
+    b += b'\x31\xD2'                                       # xor edx,edx
+    b += b'\x89\xC8'                                       # mov eax,ecx
+    b += b'\xB9\x3C\x00\x00\x00'                        # mov ecx,60
+    b += b'\xF7\xF1'                                       # div ecx → eax=分, edx=秒
+    b += b'\x89\xD1'                                       # mov ecx,edx（秒）
+    b += b'\x89\xC2'                                       # mov edx,eax（分）
+    b += b'\x8B\x83' + struct.pack('<i', TIMER_G_SLOT)     # mov eax,[ebx+slot]
+    b += b'\x8B\x00'                                       # mov eax,[eax]
+    b += b'\x85\xC0'                                       # test eax,eax
+    r8(0x74, 'ret')
+    call(TIMER_FN_SETTIME)                                   # SetTime(窗, 分, 秒)
+    L('ret')
+    b += b'\x5B\xC3'                                       # pop ebx; ret
+    L('close')
+    call(TIMER_FN_CLOSE)                                     # Close(窗)（复刻原逻辑）
+    b += b'\x5B\xC3'                                       # pop ebx; ret
+    for kind, pos, name in fix:
+        v = lab[name] - (pos + 1)
+        assert -128 <= v <= 127, (name, hex(pos), v)
+        b[pos] = v & 0xFF
+    assert len(b) <= 0x80, hex(len(b))
+    return bytes(b)
+
+
+def patch_timer_restore(data: bytearray) -> bytearray:
+    """4.x 计时显示恢复：统一闸门（挂钩 0x4ABD64）；tick 与关窗桩改调闸门。"""
+    if not TIMER_RESTORE_ENABLE:
+        return data
+    e = _u32(data, 0x3C)
+    nsec = _u16(data, e + 6)
+    opt = e + 24
+    opt_size = _u16(data, e + 20)
+    sec = opt + opt_size
+    cave_rva = cave_raw = None
+    for i in range(nsec):
+        off = sec + 40 * i
+        if bytes(data[off:off + 5]) == b'.cave':
+            cave_rva = _u32(data, off + 12)
+            cave_raw = _u32(data, off + 20)
+    if cave_rva is None:
+        raise RuntimeError('计时恢复：找不到 .cave 节')
+    cave_va = 0x400000 + cave_rva
+
+    def put(off, blob, what):
+        if any(data[cave_raw + off: cave_raw + off + len(blob)]):
+            raise RuntimeError('计时恢复：%s 区非空' % what)
+        data[cave_raw + off: cave_raw + off + len(blob)] = blob
+
+    if bytes(data[TIMER_GATE_HOOK_OFF:TIMER_GATE_HOOK_OFF + 5]) != TIMER_GATE_HOOK_ORIG:
+        raise RuntimeError('计时恢复：闸门挂钩原始字节不符 %s'
+                           % data[TIMER_GATE_HOOK_OFF:TIMER_GATE_HOOK_OFF + 5].hex())
+    s1 = _build_timer_gate_stub(cave_va + TIMER_GATE_STUB_OFF)
+    put(TIMER_GATE_STUB_OFF, s1, '闸门桩')
+    data[TIMER_GATE_HOOK_OFF:TIMER_GATE_HOOK_OFF + 5] = b'\xE9' + struct.pack(
+        '<i', cave_va + TIMER_GATE_STUB_OFF - (TIMER_GATE_HOOK_VA + 5))
+
+    if bytes(data[TIMER_TICK_OFF:TIMER_TICK_OFF + 7]) != TIMER_TICK_ORIG:
+        raise RuntimeError('计时恢复：tick 自关闭原始字节不符 %s'
+                           % data[TIMER_TICK_OFF:TIMER_TICK_OFF + 7].hex())
+    data[TIMER_TICK_OFF:TIMER_TICK_OFF + 7] = (
+        b'\xE8' + struct.pack('<i', TIMER_GATE_FN - (TIMER_TICK_VA + 5)) + b'\x90\x90')
+
+    print('计时显示恢复已应用: 闸门挂钩 0x%X -> cave+0x%X（%dB）；tick 自关闭改调 0x%X'
+          % (TIMER_GATE_HOOK_VA, TIMER_GATE_STUB_OFF, len(s1), TIMER_GATE_FN))
+    return data
+
+
+# ----------------------------------------------------------------------------
+# 6.3 高分屏缩放（load/request 导出包装；拖动/系统字体/CS_HREDRAW 包装见下）（load/request 导出包装；拖动/系统字体/CS_HREDRAW 包装见下）
 # ----------------------------------------------------------------------------
 # 不碰 CreateWindowEx 跳板/API 导入，改成把 DLL 的 load / request 两个导出入口
 # 重定向到 .cave 的包装桩：调用真实函数前后把当前线程的 DPI 感知上下文临时切到
@@ -4813,6 +4972,9 @@ print('DFM Font.Charset 已改: Tfirstconfigform/Tnotifyform SHIFTJIS→GB2312')
 data = patch_dfm_teyesight_scaled(data)
 
 data = patch_extra_link(data)
+
+# 菜单计时显示恢复：游戏退出 / 倒计时窗自毁时不丢失计时功能的倒计时显示
+data = patch_timer_restore(data)
 
 # 高分屏缩放：load/request 导出包装（请求期间线程置 UNAWARE_GDISCALED）
 if DPI_WRAP_ENABLE:
