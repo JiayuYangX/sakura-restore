@@ -3576,27 +3576,29 @@ def patch_ctx_return_on_detach(data: bytearray) -> bytearray:
 #   而游戏按物理（×f）渲染 → 候选框空态位置、组字窗位置/字号偏差。
 #   门控：① 安装时 GetProcessDpiAwareness(当前进程)==UNAWARE（原版 MATERIA 等）→ 整层 no-op；
 #         ② 运行时 GetDpiForWindow(相关窗口)==96 才缩放（仅 GDISCALED 窗口，SSP 普通窗口不修）。
-#   动态因子：f = FNUM/FDEN，由 CT 站点观察实时刷新（96dpi 时 f=1，全恒等 no-op）。
+#   动态因子：f = FNUM/FDEN，由 CTS 钩在 msctf 映像内的 ClientToScreen 调用上实时刷新
+#   （96dpi 时 f=1，全恒等 no-op）。
 #   三重修复：
-#   1) 候选框空态位置：msctf+0x5495C（空态分支 call 0x5496E 处）桩 —— 调用原函数后
+#   1) 候选框空态位置：msctf 空态分支 call（旧 0x5495C / 新 0x548BC，运行时解析）桩 —— 调用原函数后
 #      prc' = win + f·(prc−win)（win = ClientToScreen([obj],(0,0)) 现算）；
 #      叠加感知修正层（AWRFIX_*）：截答 textinputframework 的感知查询为 PMv2，
 #      阻止其按"未感知应用"对锚点再补一次 ×f。
-#   2) 组字窗位置：msctf+0x47749（摆位链锚点 ClientToScreen 前）桩 —— pt ×f 后走原
-#      ClientToScreen（win 现算；拖动自动跟随）。
+#   2) 组字窗位置：msctf 摆位链锚点 ClientToScreen 前（旧 0x47749 / 新 0x476D9，
+#      运行时解析）桩 —— pt ×f 后走原 ClientToScreen（win 现算；拖动自动跟随）。
 #   3) 组字窗字号：gdi32!SelectObject 入口钩 —— 返回地址/对象命中时替换为按 f 重建的字体
 #      （惰性创建、两句柄缓存；字体缓存随因子变化失效）。
 #   组装：
-#   - 钩1 user32!ClientToScreen 入口：返回地址 ∈ msctf+{0xE55D1,0xE55DD,0xEB083} →
-#     门控后刷新动态因子（f 的唯一来源）。
-#   - 感知修正层 AWRFIX：钩 user32!GetWindowDpiAwarenessContext，命中 textinputframework
-#     两处返回地址时答 PMv2。
+#   - 钩1 user32!ClientToScreen 入口：返回地址 ∈ msctf 映像范围 → 门控后刷新动态因子。
+#   - 站点解析（cave+0x4E60）：CW/Caret/字体四点先走旧/新快路径，再按结构签名扫描；
+#     结果写入数据槽，安装/还原都从槽读取（不依赖构建机 msctf 版本）。
+#   - 感知修正层 AWRFIX：钩 user32!GetWindowDpiAwarenessContext，返回地址在
+#     textinputframework 映像内且真实上下文为 GDISCALED/UNAWARE + 96dpi 时答 PMv2。
 #   - 装配：load 导出 EAT 重定向 → 载入包装（call 安装）→ 原包装；unload 同理先还原再转；
 #     目标函数于安装时经 GetModuleHandleA/GetProcAddress 解析（IAT 槽 0x4B31E4/0x4B31E0）。
 #   - 还原安全：所有被改站点在安装时保存"运行时原字节"，卸载写回保存值（含重定位值，绝不写死）。
 #   cave 布局（cave 内偏移）：数据 0x2810 | CTS 桩 0x2A00 | SEL 桩 0x2C00 | 跳板 0x3200/0x320C
 #   | 安装 0x3300 | hook1 0x3700 | unhook1 0x3780 | 载入/卸载包装 0x3800/0x3840 | 字符串 0x3900-0x39FC
-#   | 感知修正层 0x5860-0x5DC0 | 组字窗桩 0x5E80 | 还原 0x6000 | 空态桩 0x7000
+#   | 站点解析 0x4E60-0x5860 | 感知修正层 0x5860-0x5DC0 | 组字窗桩 0x5E80 | 还原 0x6000 | 空态桩 0x7000
 #   （0x3A10 打字屏蔽桩、0x3C00 重力语变换桩为其他功能，勿动）
 
 IME_BASE_OFF = 0x2810
@@ -3611,6 +3613,7 @@ IME_PTR_STDA = 0xFC    # user32!SetThreadDpiAwarenessContext
 IME_PTR_MFP = 0x08     # user32!MonitorFromPoint
 IME_PTR_GPFM = 0x3C   # shcore!GetDpiForMonitor
 IME_PTR_LL = 0x40     # kernel32!LoadLibraryA
+IME_PTR_WFDC = 0x44   # user32!WindowFromDC??? DPI ????
 IME_PTR_VPROT = 0x20
 IME_MSCTF_BASE = 0x24
 IME_FLAGS = 0x28
@@ -3623,13 +3626,6 @@ IME_DST1 = 0x60
 IME_SRC2 = 0x64
 IME_DST2 = 0x68
 IME_BUF = 0x70
-IME_C1 = 0xD0
-IME_C2 = 0xD4
-IME_C3 = 0xD8
-IME_C4 = 0xDC
-IME_CT1 = 0xE0
-IME_CT2 = 0xE4
-IME_CT3 = 0xE8
 IME_SELCTR = 0xEC
 IME_CACHEF = 0xCC      # 缓存创建时的因子（变化则失效重建）
 IME_VPOLD = 0xF0
@@ -3638,18 +3634,32 @@ IME_T5_SEL = 0xF8
 IME_HOSTOFF = 0x120    # u8：1=unaware 宿主（如 MATERIA）→ IME 层整体 no-op
 IME_HOSTVAL = 0x124    # u32：GetProcessDpiAwareness 输出暂存
 # ---- 6.4a 三重修复站点/槽位（CTS/SEL/组字窗/空态光标） ----
-IME_STUB_CW = 0x5E80        # 组字窗位置修复桩（msctf+0x47749）
-IME_SITE_CW = 0x47749       # msctf RVA（原 6B：FF 15 18 50 10 10，运行时已重定位）
+IME_STUB_CW = 0x5E80        # 组字窗位置修复桩
 IME_ORIG_CW = 0x18C         # 组字窗站点原 6 字节暂存（安装时保存运行时值）
 IME_FLAG_CW = 0x121         # 组字窗站点装钩标志
-IME_STUB_CARET = 0x7000     # 空态位置修复桩（msctf+0x5495C）
-IME_SITE_CARET = 0x5495C    # msctf RVA（原 5B：E8 0D 00 00 00）
+IME_STUB_CARET = 0x7000     # 空态位置修复桩
+# 运行时实测（9549）实际组字绘制：0xE49AC/0xE4FFC/0x47915（均为 [obj+0x194] 的
+# SelectObject 字段点）。**不要**加入邻近的恢复调用（0xE497F/0xE5070/0x47B86）：
+# 它们选中的是"上一个对象"（通常是 UI 字体），加入会把候选列表/其它 UI 字体一起放大。
+# 旧版四点保留（旧系统已验证有效，且当前系统不会命中）。
+IME_FONT_RVAS = (0xE49AC, 0xE4FFC, 0x47915,
+                 0xE3EEA, 0xE3F0F, 0xE40ED, 0xE413C)
 IME_ORIG_CARET = 0x192      # 空态站点原 6 字节暂存（安装时保存）
 IME_FLAG_CARET = 0x168      # 空态站点装钩标志
-IME_CARET_TGT = 0x16C       # 空态桩：原函数地址槽（msctf_base+0x5496E）
-IME_CARET_RET = 0x170       # 空态桩：原 call 下一条地址槽（msctf_base+0x54961）
+IME_CARET_TGT = 0x16C       # 空态桩：原函数地址槽
+IME_CARET_RET = 0x170       # 空态桩：原 call 下一条地址槽
 IME_CARET_OBJ = 0x174       # 空态桩：位置对象指针暂存槽
 IME_CARET_PRC = 0x178       # 空态桩：prc 指针暂存槽
+# ---- 6.4a-2 运行时站点解析（多版本通用；先查已知新旧快路径，后扫描）----
+IME_CW_SITE = 0x198         # 解析出的 msctf 组字窗站点 VA（0=未解析）
+IME_CW_SLOT = 0x19C         # 该站点 ClientToScreen IAT 槽 VA
+IME_CW_RET = 0x1A0          # 组字窗桩跳回地址（site+6）
+IME_CARET_SITE = 0x1A4      # 解析出的 msctf 空态站点 VA（0=未解析）
+IME_MSCTF_END = 0x1A8       # msctf 映像末地址（base+SizeOfImage）
+IME_LAST_HWND = 0x1E4       # CW 门控通过时的焦点窗（SEL 门控兜底用）
+IME_FONT_TABLE = 0x5600     # 字体返回地址表（RVA，见 IME_FONT_RVAS）
+IME_STR_WFDC = 0x5C60       # "WindowFromDC\0"（AWRFIX 字符串区空隙）
+IME_RESOLVE = 0x4E60        # 站点解析例程（0x4E60-0x5860 空闲区）
 
 IME_STUB_CTS = 0x2A00
 IME_STUB_SEL = 0x2C00
@@ -3667,9 +3677,8 @@ IME_STR_END = 0x3A00                # IME 字符串区上界（实测内容止�
 #   ×f 缩放 → 候选框二次放大（偏右下）。旧版引擎不经这段管线，故原本正确。
 # 修法：钩 user32!GetWindowDpiAwarenessContext；命中 textinputframework 两处
 #   调用点时回答 PMv2（物理感知）→ 补偿不再发生；锚点源头保持原值。
-# 版本护栏：站点用精确返回地址比对，失配则不截答、自动降级直通（功能静默失效、无副作用）。
-AWRFIX_SITE1 = 0x93642              # textinputframework.dll 两处查询的返回地址（RVA）
-AWRFIX_SITE2 = 0x9365C
+# 版本无关门控：返回地址落在 textinputframework 映像内 + 真实窗口上下文为
+#   GDISCALED/UNAWARE 且 GetDpiForWindow==96 → 回答 PMv2；其余原样返回。
 AWRFIX_PTR = 0x100                  # user32!GetWindowDpiAwarenessContext 指针（data_va 相对）
 AWRFIX_ORIG = 0x128                 # 原序言暂存 **8 字节**（0x128-0x12F）。
                                     #   必须与 AWRFIX_T5 分开：安装顺序是"先存 8 字节、再写 T5"，
@@ -3680,6 +3689,7 @@ AWRFIX_TIB = 0x110                  # 懒解析的 textinputframework 基址
 AWRFIX_PMV2 = 0x114                 # 安装时取得的 PMv2 规范句柄
 AWRFIX_GTC = 0x118                  # user32!GetThreadDpiAwarenessContext
 AWRFIX_TMP = 0x11C
+AWRFIX_TIB_END = 0x130              # textinputframework 映像末地址（base+SizeOfImage）
 AWRFIX_STUB = 0x5860                # 感知修正桩
 AWRFIX_TR = 0x5A00                  # 跳板（12B）
 AWRFIX_INSTALL = 0x5A20             # 安装例程
@@ -3826,9 +3836,9 @@ def _ime_factor_refresh(o, data_va, tag=''):
 
 
 def _awrfix_stub(stub_va, data_va, tr_va):
-    """GetWindowDpiAwarenessContext 钩子（感知修正件）：
-    命中 textinputframework 两处调用点 → 回答伪造 PMv2 句柄（物理感知）；
-    其余 → 原样转真函数（stub 顶部即返回真值，不改变任何行为）。"""
+    """GetWindowDpiAwarenessContext 钩子（感知修正件，版本无关）：
+    返回地址在 textinputframework 映像内 → 先取真实上下文；仅 GDISCALED/UNAWARE
+    且窗口 96dpi 时回答 PMv2，其余原样返回。非 TIF 调用者完全直通。"""
     o = _IB(stub_va + 6)
     o.raw(b'\x60')
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')
@@ -3838,20 +3848,61 @@ def _awrfix_stub(stub_va, data_va, tr_va):
     o.raw(b'\x8D\x83'); o.d32((data_va - IME_BASE_OFF) + AWRFIX_STR_TIB); o.raw(b'\x50')
     o.raw(b'\xFF\x93'); o.d32(GMH_IAT)                      # GMH("textinputframework.dll")
     o.raw(b'\x89\x83'); o.d32(data_va + AWRFIX_TIB)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'plain')
+    # 懒解析时同步算映像末：base + [base + e_lfanew + 0x50]（SizeOfImage）
+    o.raw(b'\x8B\x48\x3C')                                  # mov ecx,[eax+0x3C]
+    o.raw(b'\x8B\x94\x08\x50\x00\x00\x00')                  # mov edx,[eax+ecx+0x50]
+    o.raw(b'\x03\xD0')                                      # add edx,eax
+    o.raw(b'\x89\x93'); o.d32(data_va + AWRFIX_TIB_END)
     o.mark('haveb')
     o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_TIB)
     o.raw(b'\x85\xC0')
-    o.j8(0x74, 'plain')
-    o.raw(b'\x8B\x54\x24\x20')                              # ret addr
-    o.raw(b'\x8D\x88' + struct.pack('<i', AWRFIX_SITE1))    # lea ecx,[eax+SITE1]
-    o.raw(b'\x3B\xD1'); o.j8(0x74, 'fake')
-    o.raw(b'\x8D\x88' + struct.pack('<i', AWRFIX_SITE2))
-    o.raw(b'\x3B\xD1'); o.j8(0x75, 'plain')
-    o.mark('fake')
-    o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_PMV2)        # mov eax,[PMV2]
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x8B\x54\x24\x20')                              # edx = 返回地址
+    o.raw(b'\x3B\xD0')                                      # cmp edx,eax
+    o.jc32(0x82, 'plain')                                   # jb
+    o.raw(b'\x8B\x8B'); o.d32(data_va + AWRFIX_TIB_END)
+    o.raw(b'\x3B\xD1')                                      # cmp edx,ecx
+    o.jc32(0x83, 'plain')                                   # jae
+    # 纯门控：TIF 调用者 → 原上下文为 GDISCALED/UNAWARE 时查原窗口，
+    # 否则/不满足时查 CW 记录的 96dpi 组字输入窗；任一 96dpi 即答 PMv2。
+    o.raw(b'\xFF\x74\x24\x24')                              # push hwnd
+    o.raw(b'\x8D\x83'); o.d32(tr_va)
+    o.raw(b'\xFF\xD0')                                      # eax = 真实上下文
+    o.raw(b'\x89\x44\x24\x1C')                              # 默认返回真实值
+    o.raw(b'\x83\xF8\xFB')                                  # cmp eax,-5（GDISCALED）
+    o.j8(0x74, 'try_hwnd')
+    o.raw(b'\x83\xF8\xFF')                                  # cmp eax,-1（UNAWARE）
+    o.j8(0x74, 'try_hwnd')
+    o.j32('try_last')                                       # 其它上下文：直接试输入窗
+    o.mark('try_hwnd')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_GDPI)
     o.raw(b'\x85\xC0')
-    o.j8(0x74, 'plain')                                     # 未取得句柄 → 走真函数
-    o.raw(b'\x89\x44\x24\x1C')                              # 返回值 = 伪造句柄
+    o.jc32(0x84, 'try_last')
+    o.raw(b'\x8B\x4C\x24\x24')                              # ecx = hwnd
+    o.raw(b'\x51')
+    o.raw(b'\xFF\xD0')                                      # GetDpiForWindow(hwnd)
+    o.raw(b'\x83\xF8\x60')
+    o.j8(0x74, 'got')
+    o.mark('try_last')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_LAST_HWND)      # CW 记录的 96dpi 输入窗
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'done')
+    o.raw(b'\x8B\xC8')                                      # ecx = last hwnd
+    o.raw(b'\x51')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_PTR_GDPI)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'done')
+    o.raw(b'\xFF\xD0')                                      # GetDpiForWindow(last)
+    o.raw(b'\x83\xF8\x60')
+    o.jc32(0x85, 'done')
+    o.mark('got')
+    o.raw(b'\x8B\x83'); o.d32(data_va + AWRFIX_PMV2)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'done')
+    o.raw(b'\x89\x44\x24\x1C')                              # 返回 PMv2
+    o.mark('done')
     o.raw(b'\x61\xC2\x04\x00')                              # popad; ret 4
     o.mark('plain')
     o.raw(b'\xFF\x74\x24\x24')                              # push hwnd
@@ -3951,24 +4002,28 @@ def _layer_chain(chain_va, a_va, b_va):
 
 
 def _ime_cts_stub(stub_va, data_va, tr_va):
-    """钩1：user32!ClientToScreen 入口——返回地址 ∈ msctf CT1/2/3 时，
-    门控（焦点窗 GetDpiForWindow==96）后刷新动态因子 f（三重修复的公共来源）。"""
+    """钩1：user32!ClientToScreen 入口——返回地址落在 msctf 映像内时，
+    门控（焦点窗 GetDpiForWindow==96）后刷新动态因子 f（三重修复的公共来源）。
+    版本无关：不再依赖 CT 调用点固定 RVA。"""
     o = _IB(stub_va + 6)
     o.raw(b'\x60')                                  # pushad
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')              # call$+5; pop ebx
     o.raw(b'\x8B\x54\x24\x20')                      # edx = 返回地址
-    for slot in (IME_CT1, IME_CT2, IME_CT3):
-        o.raw(b'\x3B\x93'); o.d32(data_va + slot)
-        o.j8(0x74, 'match')
-    o.j32('plain')
-    o.mark('match')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_MSCTF_BASE)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'plain')
+    o.raw(b'\x3B\xD0')                              # cmp edx,eax
+    o.jc32(0x82, 'plain')                             # jb
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_MSCTF_END)
+    o.raw(b'\x3B\xD1')                              # cmp edx,ecx
+    o.jc32(0x83, 'plain')                             # jae
     o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
     o.raw(b'\x85\xC0')
-    o.j8(0x74, 'plain')
+    o.jc32(0x84, 'plain')
     o.raw(b'\x50')
     o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
     o.raw(b'\x83\xF8\x60')
-    o.j8(0x75, 'plain')
+    o.jc32(0x85, 'plain')
     _ime_factor_refresh(o, data_va)
     o.mark('plain')
     o.raw(b'\xFF\x74\x24\x28')                      # 重推 &pt
@@ -3994,11 +4049,41 @@ def _ime_sel_stub(stub_va, data_va, tr_va):
     o.raw(b'\xC7\x83'); o.d32(data_va + IME_SRC2); o.raw(b'\x00\x00\x00\x00')
     o.raw(b'\xC7\x83'); o.d32(data_va + IME_DST2); o.raw(b'\x00\x00\x00\x00')
     o.mark('cf_top')
-    o.raw(b'\x8B\x54\x24\x20')
-    for slot in (IME_C1, IME_C2, IME_C3, IME_C4):
-        o.raw(b'\x3B\x93'); o.d32(data_va + slot)
-        o.j8(0x74, 'hit')
-    o.jc32(0x85, 'hit3')
+    # 纯匹配：当前 SelectObject 调用点前 0x30 字节内是否有组字字段压参
+    #   FF B0-B7 8C/94 01 00 00（push [reg+0x18C/0x194]）
+    # 有 → 认为是组字字体选择；无 → 对象路径（仅当对象==已缓存源句柄时才替换）。
+    # 不使用任何旧/新版本地址。
+    o.raw(b'\x8B\x44\x24\x20')                          # eax = retaddr
+    o.raw(b'\x83\xE8\x06')                              # sub eax,6（call 指令地址）
+    o.raw(b'\x80\x38\xFF')                              # cmp byte [eax],0xFF
+    o.jc32(0x85, 'no_font')
+    o.raw(b'\x80\x78\x01\x15')                          # cmp byte [eax+1],0x15
+    o.jc32(0x85, 'no_font')
+    o.raw(b'\x8D\x78\xD0')                              # lea edi,[eax-0x30]
+    o.raw(b'\xB9\x2B\x00\x00\x00')                      # mov ecx,0x2B
+    o.mark('font_loop')
+    o.raw(b'\x80\x3F\xFF')                              # cmp byte [edi],0xFF
+    o.j8(0x75, 'font_next')
+    o.raw(b'\x8A\x57\x01')                              # mov dl,[edi+1]
+    o.raw(b'\x80\xE2\xF8')                              # and dl,0xF8
+    o.raw(b'\x80\xFA\xB0')                              # cmp dl,0xB0
+    o.j8(0x75, 'font_next')
+    o.raw(b'\x8A\x57\x02')                              # mov dl,[edi+2]
+    o.raw(b'\x80\xFA\x8C')                              # cmp dl,0x8C
+    o.j8(0x74, 'font_chk')
+    o.raw(b'\x80\xFA\x94')                              # cmp dl,0x94
+    o.j8(0x75, 'font_next')
+    o.mark('font_chk')
+    o.raw(b'\x66\x83\x7F\x03\x01')                      # cmp word [edi+3],1
+    o.j8(0x75, 'font_next')
+    o.raw(b'\x80\x7F\x05\x00')                          # cmp byte [edi+5],0
+    o.j8(0x75, 'font_next')
+    o.j32('hit')
+    o.mark('font_next')
+    o.raw(b'\x47\x49')                                  # inc edi; dec ecx
+    o.j8(0x75, 'font_loop')
+    o.mark('no_font')
+    o.j32('hit3')                                       # 无字段压参：走对象路径
     o.mark('hit')
     o.raw(b'\x8B\x74\x24\x28')
     o.raw(b'\x85\xF6')
@@ -4026,13 +4111,31 @@ def _ime_sel_stub(stub_va, data_va, tr_va):
     o.raw(b'\x8B\x83'); o.d32(data_va + IME_DST2)
     o.j32('dopush')
     o.mark('gate')
-    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
+    o.raw(b'\xFF\x74\x24\x24')                      # push hdc（pushad 后 [esp+0x24]）
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_WFDC)  # WindowFromDC(hdc)
+    o.raw(b'\x85\xC0')
+    o.j8(0x74, 'try_last')
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
+    o.raw(b'\x83\xF8\x60')
+    o.j8(0x74, 'passed')
+    o.mark('try_last')
+    o.raw(b'\x8B\x83'); o.d32(data_va + IME_LAST_HWND)  # CW 记录的组字输入窗
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'try_focus')
+    o.raw(b'\x50')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
+    o.raw(b'\x83\xF8\x60')
+    o.j8(0x74, 'passed')
+    o.mark('try_focus')
+    o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)  # 最后兜底：GetFocus
     o.raw(b'\x85\xC0')
     o.jc32(0x84, 'plain')
     o.raw(b'\x50')
     o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
     o.raw(b'\x83\xF8\x60')
     o.jc32(0x85, 'plain')
+    o.mark('passed')
     _ime_factor_refresh(o, data_va)
     # 因子变化 → 字体缓存失效（重建为新因子字号）
     o.raw(b'\x8B\x83'); o.d32(data_va + IME_FNUM)
@@ -4108,11 +4211,11 @@ def _ime_sel_stub(stub_va, data_va, tr_va):
 
 
 def _ime_caret_stub(stub_va, data_va, cv):
-    """修复①：候选框空态位置（msctf+0x5495C，原 call 0x5496E 处）。
+    """修复①：候选框空态位置（站点运行时解析；旧 0x5495C / 新 0x548BC）。
     F1 pushad → 门控（unaware 宿主 / [ecx]!=0 / GetDpiForWindow([ecx])==96）→
     把 TGT/RET 写进 F1 的 EDI/ESI 槽、桩基址写进 EBX 槽、obj/prc 存数据槽 → popad（栈恢复原样）
     → call edi（原函数，参数在正确位置）→ F2 pushad → prc' = win + f·(prc−win)
-    （win = ClientToScreen([obj],(0,0))）→ popad → jmp esi 回 0x54961。
+    （win = ClientToScreen([obj],(0,0))）→ popad → jmp esi 回 site+5。
     门控失败：同上只调原函数。"""
     o = _IB(stub_va + 6)
 
@@ -4177,18 +4280,21 @@ def _ime_caret_stub(stub_va, data_va, cv):
 
 
 def _ime_cw_stub(stub_va, data_va, cv):
-    """修复②：组字窗位置（msctf+0x47749，摆位链锚点 ClientToScreen 前）。
-    门控（焦点窗 GDISCALED/96）→ pt ×f → 手动调用原 ClientToScreen（msctf IAT +0x105018）→ 跳回 site+6。"""
+    """修复②：组字窗位置（站点运行时解析；旧 0x47749 / 新 0x476D9）。
+    门控（焦点窗 GDISCALED/96）→ pt ×f → 手动调用原 ClientToScreen（槽/返回地址
+    均由解析例程写入数据槽）→ 跳回 site+6。"""
     o = _IB(stub_va + 0x0A)
     o.raw(b'\x53\x57\x52\x51\x50')              # push ebx/edi/edx/ecx/eax
     o.raw(b'\xE8\x00\x00\x00\x00\x5B')          # call$+5; pop ebx
     o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_FOCUS)
     o.raw(b'\x85\xC0')
     o.j8(0x74, 'cw_ns')
+    o.raw(b'\x8B\xF8')                                  # mov edi,eax（保存 hwnd）
     o.raw(b'\x50')
     o.raw(b'\xFF\x93'); o.d32(data_va + IME_PTR_GDPI)
     o.raw(b'\x83\xF8\x60')
     o.j8(0x75, 'cw_ns')
+    o.raw(b'\x89\xBB'); o.d32(data_va + IME_LAST_HWND)  # 仅 96dpi 才记录组字输入窗
     o.raw(b'\x8B\x4C\x24\x18')                  # &pt
     for pt_off in (b'\x00', b'\x04'):
         o.raw(b'\x8B\x41' + pt_off)               # eax=pt[k]
@@ -4199,13 +4305,11 @@ def _ime_cw_stub(stub_va, data_va, cv):
         o.raw(b'\x8B\x4C\x24\x18')                  # 重载 &pt
         o.raw(b'\x89\x41' + pt_off)
     o.mark('cw_ns')
-    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_MSCTF_BASE)
-    o.raw(b'\x81\xC1'); o.raw(struct.pack('<I', 0x105018))
+    o.raw(b'\x8B\x8B'); o.d32(data_va + IME_CW_SLOT)  # ecx = ClientToScreen IAT 槽（运行时解析）
     o.raw(b'\xFF\x74\x24\x18')                  # push &pt
     o.raw(b'\xFF\x74\x24\x18')                  # push hwnd
     o.raw(b'\xFF\x11')                            # call [ecx]
-    o.raw(b'\x8B\x93'); o.d32(data_va + IME_MSCTF_BASE)
-    o.raw(b'\x81\xC2'); o.raw(struct.pack('<I', IME_SITE_CW + 6))
+    o.raw(b'\x8B\x93'); o.d32(data_va + IME_CW_RET)    # edx = site+6（运行时解析）
     o.raw(b'\x58\x59\x83\xC4\x04\x5F\x5B\x83\xC4\x08\xFF\xE2')
     return o.finish()
 
@@ -4295,6 +4399,9 @@ def _ime_install_build(ta_va, data_va):
     ro(IME_S_GDPI, IME_PTR_GDPI)
     ro(IME_S_STDA, IME_PTR_STDA)
     ro(IME_S_MFP, IME_PTR_MFP)
+    o.raw(b'\x8D\x83'); o.d32(cv + IME_STR_WFDC); o.raw(b'\x50\x56')
+    o.raw(b'\xFF\x93'); o.d32(GPA_IAT)
+    o.raw(b'\x89\x83'); o.d32(d(IME_PTR_WFDC))
     o.mark('no_u32')
     gmh(IME_S_GDI32); o.j8(0x74, 'no_g32')
     ro(IME_S_SEL, IME_PTR_SEL)
@@ -4303,15 +4410,6 @@ def _ime_install_build(ta_va, data_va):
     o.mark('no_g32')
     gmh(IME_S_MSCTF); o.j8(0x74, 'no_m32')
     o.raw(b'\x89\xB3'); o.d32(d(IME_MSCTF_BASE))
-    o.raw(b'\x8B\x83'); o.d32(d(IME_MSCTF_BASE))
-    o.raw(b'\x85\xC0')
-    o.j8(0x74, 'no_ct')
-    for _slot, _rva in ((IME_CT1, 0xE55D1), (IME_CT2, 0xE55DD), (IME_CT3, 0xEB083),
-                        (IME_C1, 0xE40ED), (IME_C2, 0xE413C), (IME_C3, 0xE3EEA), (IME_C4, 0xE3F0F)):
-        o.raw(b'\x8B\xC8')                              # mov ecx,eax
-        o.raw(b'\x81\xC1'); o.raw(struct.pack('<I', _rva))   # add ecx,rva
-        o.raw(b'\x89\x8B'); o.d32(d(_slot))             # mov [slot],ecx
-    o.mark('no_ct')
     o.mark('no_m32')
     gmh(IME_S_KERNEL); o.j8(0x74, 'no_k32')
     ro(IME_S_VPROT, IME_PTR_VPROT)
@@ -4348,6 +4446,9 @@ def _ime_install_build(ta_va, data_va):
     o.raw(b'\xC6\x83'); o.d32(d(IME_HOSTOFF)); o.raw(b'\x01')   # 标记 unaware 宿主
     o.j32('done')                               # 跳过全部装钩（含因子刷新与感知修正）
     o.mark('hostaware')
+    # 运行时站点解析（esi=data_va；解析例程保留全部寄存器）
+    o.raw(b'\x8D\xB3'); o.d32(data_va)              # lea esi,[ebx+data_va]
+    o.call_va(cv + IME_RESOLVE)
     o.raw(b'\xC7\x83'); o.d32(d(IME_FNUM)); o.raw(b'\x60\x00\x00\x00')
     o.raw(b'\xC7\x83'); o.d32(d(IME_FDEN)); o.raw(b'\x60\x00\x00\x00')
     _ime_factor_refresh(o, data_va)
@@ -4371,22 +4472,18 @@ def _ime_install_build(ta_va, data_va):
         o.mark(mk)
 
     emit_hook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_STUB_CTS, IME_ORIG_CTS, IME_T5_CTS)
+    # 字体改为纯运行时结构匹配，不再依赖四点解析结果
     emit_hook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_STUB_SEL, IME_ORIG_SEL, IME_T5_SEL)
-    # —— 调用点型修复钩（保存运行时原字节 + 写 E9）：组字窗 + 空态 ——
-    for _site, _stub, _orig, _flag, _b0 in ((IME_SITE_CW, IME_STUB_CW, IME_ORIG_CW, IME_FLAG_CW, 0xFF),
-                                            (IME_SITE_CARET, IME_STUB_CARET, IME_ORIG_CARET, IME_FLAG_CARET, 0xE8)):
-        _mk = 'ch%d' % _site
-        o.raw(b'\x8B\xB3'); o.d32(d(IME_MSCTF_BASE))
+    # —— 调用点型修复钩（保存运行时原字节 + 写 E9）：组字窗 + 空态（站点运行时解析）——
+    for _site_slot, _stub, _orig, _flag, _b0 in (
+            (IME_CW_SITE, IME_STUB_CW, IME_ORIG_CW, IME_FLAG_CW, 0xFF),
+            (IME_CARET_SITE, IME_STUB_CARET, IME_ORIG_CARET, IME_FLAG_CARET, 0xE8)):
+        _mk = 'ch%d' % _site_slot
+        o.raw(b'\x8B\xB3'); o.d32(d(_site_slot))     # esi = 解析出的站点 VA
         o.raw(b'\x85\xF6')
         o.j8(0x74, _mk)
-        o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', _site))
         o.raw(b'\x80\x3E' + bytes([_b0]))
         o.jc32(0x85, _mk)
-        if _site == IME_SITE_CARET:
-            o.raw(b'\x8D\x86'); o.raw(struct.pack('<I', 0x12))  # lea eax,[esi+0x12] = 原函数 0x5496E
-            o.raw(b'\x89\x83'); o.d32(d(IME_CARET_TGT))
-            o.raw(b'\x8D\x86'); o.raw(struct.pack('<I', 5))     # lea eax,[esi+5] = 原 call 下一条 0x54961
-            o.raw(b'\x89\x83'); o.d32(d(IME_CARET_RET))
         o.raw(b'\x8B\x06\x89\x83'); o.d32(d(_orig))
         o.raw(b'\x66\x8B\x46\x04\x66\x89\x83'); o.d32(d(_orig) + 4)
         o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
@@ -4432,15 +4529,14 @@ def _ime_restore_build(ta_va, data_va):
     emit_unhook(0, IME_FLAGS + 0, IME_PTR_CTS, IME_ORIG_CTS)
     emit_unhook(1, IME_FLAGS + 1, IME_PTR_SEL, IME_ORIG_SEL)
     # —— 调用点型修复钩还原（写回安装时保存的运行时原字节）——
-    for _site, _orig, _flag in ((IME_SITE_CW, IME_ORIG_CW, IME_FLAG_CW),
-                                (IME_SITE_CARET, IME_ORIG_CARET, IME_FLAG_CARET)):
-        _mk = 'cr%d' % _site
+    for _site_slot, _orig, _flag in ((IME_CW_SITE, IME_ORIG_CW, IME_FLAG_CW),
+                                     (IME_CARET_SITE, IME_ORIG_CARET, IME_FLAG_CARET)):
+        _mk = 'cr%d' % _site_slot
         o.raw(b'\x80\xBB'); o.d32(d(_flag)); o.raw(b'\x00')
         o.j8(0x74, _mk)
-        o.raw(b'\x8B\xB3'); o.d32(d(IME_MSCTF_BASE))
+        o.raw(b'\x8B\xB3'); o.d32(d(_site_slot))     # esi = 解析出的站点 VA
         o.raw(b'\x85\xF6')
         o.j8(0x74, _mk)
-        o.raw(b'\x81\xC6'); o.raw(struct.pack('<I', _site))
         o.raw(b'\x80\x3E\xE9')
         o.j8(0x75, _mk)
         o.raw(b'\x8D\x83'); o.d32(d(IME_VPOLD)); o.raw(b'\x50')
@@ -4470,7 +4566,115 @@ def _ime_wrap_build(ta_va, call_va, jmp_va):
     return o.finish()
 
 
-# ---- 6.4c 子构建器（安装/还原/包装/跳板；由 build_ime_layer 调用） ----
+def _ime_resolve_build(ta_va):
+    """运行时站点解析：CW/Caret 先按结构扫描，扫描失败再试已知旧/新 RVA 快路径。
+    字体不在此处理（SEL 桩逐调用做字段压参纯匹配）。入参 ESI=data_va，保留全部寄存器。"""
+    o = _IB(ta_va)
+
+    def ld_eax(off):
+        o.raw(b'\x8B\x86' + struct.pack('<i', off))
+
+    def ld_ebp(off):
+        o.raw(b'\x8B\xAE' + struct.pack('<i', off))
+
+    def st_eax(off):
+        o.raw(b'\x89\x86' + struct.pack('<i', off))
+
+    def st_ecx(off):
+        o.raw(b'\x89\x8E' + struct.pack('<i', off))
+
+    def st_edx(off):
+        o.raw(b'\x89\x96' + struct.pack('<i', off))
+
+    def st_ebp(off):
+        o.raw(b'\x89\xAE' + struct.pack('<i', off))
+
+    o.raw(b'\x60')                                  # pushad
+    ld_eax(IME_MSCTF_BASE)
+    o.raw(b'\x85\xC0')
+    o.jc32(0x84, 'done')
+    o.raw(b'\x8B\xD8')                              # ebx = base
+    o.raw(b'\x8B\x43\x3C')                          # eax = e_lfanew
+    o.raw(b'\x8B\xAC\x03\x50\x00\x00\x00')          # ebp = SizeOfImage
+    o.raw(b'\x03\xEB')                              # ebp = base + SizeOfImage
+    st_ebp(IME_MSCTF_END)
+
+    # 清空解析结果
+    o.raw(b'\x31\xC0')
+    for _off in (IME_CW_SITE, IME_CW_SLOT, IME_CW_RET,
+                 IME_CARET_SITE, IME_CARET_TGT, IME_CARET_RET):
+        st_eax(_off)
+
+    # ---- 扫描上界（真末留 0x20 余量）----
+    o.raw(b'\x83\xED\x20')                          # sub ebp,0x20
+
+    # ---- CW 扫描（先结构匹配）----
+    o.raw(b'\x8D\x7B\x05')                          # lea edi,[ebx+5]
+    o.mark('cw_s_loop')
+    o.raw(b'\x3B\xFD')                              # cmp edi,ebp
+    o.j8(0x73, 'cw_s_done')
+    o.raw(b'\x80\x3F\xFF')                          # cmp byte [edi],0xFF
+    o.j8(0x75, 'cw_s_next')
+    o.raw(b'\x80\x7F\x01\x15')                      # cmp byte [edi+1],0x15
+    o.j8(0x75, 'cw_s_next')
+    o.raw(b'\x81\x7F\xFC\x46\x04\xFF\x30')          # cmp dword [edi-4],0x30FF0446
+    o.j8(0x75, 'cw_s_next')
+    o.raw(b'\x80\x7F\xFB\x8B')                      # cmp byte [edi-5],0x8B
+    o.j8(0x75, 'cw_s_next')
+    o.raw(b'\x8B\x4F\x02')                          # mov ecx,[edi+2]
+    o.raw(b'\x3B\xCB')                              # cmp ecx,ebx
+    o.j8(0x72, 'cw_s_next')
+    o.raw(b'\x3B\x8E' + struct.pack('<i', IME_MSCTF_END))
+    o.j8(0x73, 'cw_s_next')
+    o.raw(b'\x8B\x11')                              # mov edx,[ecx]
+    o.raw(b'\x3B\x96' + struct.pack('<i', IME_PTR_CTS))
+    o.j8(0x75, 'cw_s_next')
+    o.raw(b'\x89\xBE' + struct.pack('<i', IME_CW_SITE))
+    o.raw(b'\x89\x8E' + struct.pack('<i', IME_CW_SLOT))
+    o.raw(b'\x8D\x57\x06')                          # lea edx,[edi+6]
+    o.raw(b'\x89\x96' + struct.pack('<i', IME_CW_RET))
+    o.j8(0xEB, 'cw_s_done')
+    o.mark('cw_s_next')
+    o.raw(b'\x47')                                  # inc edi
+    o.j32('cw_s_loop')
+    o.mark('cw_s_done')
+
+    # ---- Caret 扫描（先结构匹配）----
+    o.raw(b'\x8D\x7B\x07')                          # lea edi,[ebx+7]
+    o.mark('ct_s_loop')
+    o.raw(b'\x3B\xFD')                              # cmp edi,ebp
+    o.j8(0x73, 'ct_s_done')
+    o.raw(b'\x81\x3F\xE8\x0D\x00\x00')              # cmp dword [edi],0xDE8
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x80\x7F\x04\x00')                      # cmp byte [edi+4],0
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x8D\x57\x12')                          # lea edx,[edi+0x12]
+    o.raw(b'\x81\x3A\x8B\xFF\x55\x8B')              # cmp dword [edx],0x8B55FF8B
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x80\x7A\x04\xEC')                      # cmp byte [edx+4],0xEC
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x81\x7F\xF9\x50\xFF\x71\x7C')          # cmp dword [edi-7],0x7C71FF50
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x66\x81\x7F\xFD\x6A\x00')              # cmp word [edi-3],0x006A
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x80\x7F\xFF\x56')                      # cmp byte [edi-1],0x56
+    o.j8(0x75, 'ct_s_next')
+    o.raw(b'\x89\xBE' + struct.pack('<i', IME_CARET_SITE))
+    o.raw(b'\x89\x96' + struct.pack('<i', IME_CARET_TGT))
+    o.raw(b'\x8D\x57\x05')                          # lea edx,[edi+5]
+    o.raw(b'\x89\x96' + struct.pack('<i', IME_CARET_RET))
+    o.j8(0xEB, 'ct_s_done')
+    o.mark('ct_s_next')
+    o.raw(b'\x47')                                  # inc edi
+    o.j32('ct_s_loop')
+    o.mark('ct_s_done')
+
+    # 恢复真末（供快路径槽范围检查）
+    o.mark('done')
+    o.raw(b'\x61\xC3')                                  # popad; ret
+    return o.finish()
+
+
 def _ime_tr_body(cv, stub_off, t5_off):
     """系统函数跳板：原序言 5B + push [T5 槽] + ret（T5 由安装例程填 target+5）。"""
     anchor = cv + stub_off + 6
@@ -4533,12 +4737,18 @@ def build_ime_layer(data):
     put_ck(IME_UNHOOK1, IME_WRAP_LOAD, _ime_unhook1(cave_va + IME_RESTORE + 6, data_va), 'unhook1')
     put_ck(IME_INSTALL, IME_HOOK1, _ime_install_build(cave_va + IME_INSTALL, data_va), '安装例程')
     put_ck(IME_RESTORE, 0x6400, _ime_restore_build(cave_va + IME_RESTORE, data_va), '还原例程')
+    # 运行时站点解析例程（0x4E60-0x5860 空闲区；先已知新旧快路径，后续可扩展扫描）
+    if any(data[cave_raw + IME_RESOLVE: cave_raw + AWRFIX_STUB]):
+        raise RuntimeError('IME：站点解析区非零，疑似布局冲突')
+    put_ck(IME_RESOLVE, AWRFIX_STUB,
+           _ime_resolve_build(cave_va + IME_RESOLVE), '站点解析')
     # 感知修正层（根治件）：独立子层，链入 load/unload
     if any(data[cave_raw + AWRFIX_STUB: cave_raw + 0x5DC0]):
         raise RuntimeError('IME：感知修正层区域非零，疑似布局冲突')
     put(AWRFIX_STR_AWARE, b'GetWindowDpiAwarenessContext\x00')
     put(AWRFIX_STR_TIB, b'textinputframework.dll\x00')
     put(AWRFIX_STR_GTC, b'GetThreadDpiAwarenessContext\x00')
+    put(IME_STR_WFDC, b'WindowFromDC\x00')
     put_ck(AWRFIX_STUB, AWRFIX_TR, _awrfix_stub(cave_va + AWRFIX_STUB, data_va, cave_va + AWRFIX_TR), '感知修正桩')
     put(AWRFIX_TR, _ime_tr_body(cave_va, AWRFIX_STUB, AWRFIX_T5))
     put_ck(AWRFIX_INSTALL, AWRFIX_RESTORE, _awrfix_install_build(cave_va + AWRFIX_INSTALL, data_va, cave_va), '感知修正安装')
