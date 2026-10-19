@@ -3671,8 +3671,10 @@ IME_STR_END = 0x3A00                # IME 字符串区上界（实测内容止�
 AWRFIX_SITE1 = 0x93642              # textinputframework.dll 两处查询的返回地址（RVA）
 AWRFIX_SITE2 = 0x9365C
 AWRFIX_PTR = 0x100                  # user32!GetWindowDpiAwarenessContext 指针（data_va 相对）
-AWRFIX_ORIG = 0x104                 # 原序言暂存
-AWRFIX_T5 = 0x108                   # 跳板槽
+AWRFIX_ORIG = 0x128                 # 原序言暂存 **8 字节**（0x128-0x12F）。
+                                    #   必须与 AWRFIX_T5 分开：安装顺序是"先存 8 字节、再写 T5"，
+                                    #   两槽若重叠，T5 会覆盖保存的第 5 字节 → 卸载还原出坏指令。
+AWRFIX_T5 = 0x108                   # 跳板槽（func+5，4 字节）
 AWRFIX_FLAG = 0x10C                 # 挂载标志
 AWRFIX_TIB = 0x110                  # 懒解析的 textinputframework 基址
 AWRFIX_PMV2 = 0x114                 # 安装时取得的 PMv2 规范句柄
@@ -4351,6 +4353,9 @@ def _ime_install_build(ta_va, data_va):
     _ime_factor_refresh(o, data_va)
 
     def emit_hook(idx, flag_off, ptr_slot, stub_off, orig_off, t5_off):
+        # 保存区存 8 字节，必须与 T5 槽分开（否则安装时 T5 覆盖原字节，卸载还原坏指令）
+        assert orig_off + 8 <= t5_off or t5_off + 4 <= orig_off, \
+            'IME hook 槽重叠：orig(8B)=0x%X t5(4B)=0x%X' % (orig_off, t5_off)
         mk = 'sk%d' % idx
         o.raw(b'\x80\xBB'); o.d32(d(flag_off)); o.raw(b'\x00')
         o.j8(0x75, mk)
@@ -4475,6 +4480,10 @@ def _ime_tr_body(cv, stub_off, t5_off):
 
 def build_ime_layer(data):
     """构建全部 IME 组件并写入 .cave 的 IME 段（含 EAT 安装/卸载包装接线；返回 data）。"""
+    # 数据槽区间断言：保存区（8B）不得与 T5（4B）重叠
+    #（历史事故：AWRFIX_ORIG=0x104 与 AWRFIX_T5=0x108 重叠 → 卸载还原坏指令 → 切人格崩溃）
+    assert AWRFIX_ORIG + 8 <= AWRFIX_T5 or AWRFIX_T5 + 4 <= AWRFIX_ORIG, \
+        'AWRFIX 槽重叠：ORIG(8B)=0x%X T5(4B)=0x%X' % (AWRFIX_ORIG, AWRFIX_T5)
     e = _u32(data, 0x3C)
     nsec = _u16(data, e + 6)
     opt = e + 24
