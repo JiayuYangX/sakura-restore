@@ -2039,10 +2039,10 @@ Panel Attack 25
 \ms
 
 拜森将军
-%ms
+\ms
 
 泽田队长
-%ms
+\ms
 
 南喵宫
 \ms
@@ -2267,7 +2267,7 @@ Satellaview
 \mz
 
 NERV
-%mh
+\mh
 
 头脑简单
 \k
