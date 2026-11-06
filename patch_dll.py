@@ -5232,11 +5232,156 @@ with open(DLL_OUT, 'wb') as f:
 print(f'first.dll 写入完成 → {DLL_OUT}')
 
 # ---- 部署：命令行第一个参数 = ghost master 目录（或其下任一 dll 文件路径）----
+#      部署后自动让运行中的 SSP 重新载入 SHIORI；加 --no-reload 可关闭。
+#
+#      SSP 加载中的 DLL 不能写、不能删（被映射成 image section），但允许改名：
+#      改名腾出原路径 → 补入新文件 → 让 SSP 走一次 unload / FreeLibrary / LoadLibrary。
+#      重载通过 SSP 内建 MCP 端点触发（127.0.0.1:9801/api/mcp/v1，tools/call "reload"）。
+
+MCP_URL = 'http://127.0.0.1:9801/api/mcp/v1'
+MCP_PROTO = '2025-06-18'
+
+
+def mcp_tools_call(name, arguments, timeout=15.0):
+    """对运行中的 SSP 发一次 MCP tools/call。SSP 没开时返回 None（不抛异常）。"""
+    import json, urllib.request, urllib.error
+    payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                          'params': {'name': name, 'arguments': arguments}}).encode('utf-8')
+    req = urllib.request.Request(MCP_URL, data=payload, method='POST', headers={
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Mcp-Name': 'patch_dll',
+        'Mcp-Method': 'tools/call',
+        'MCP-Protocol-Version': MCP_PROTO,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print(f'  未触发重载（SSP 可能未运行）：{e}')
+        return None
+
+
+def reload_shiori(ghost_root=None):
+    """让 SSP 卸载并重新加载 SHIORI。ghost_root = 该人格根目录（含 ghost/ 与 shell/）。"""
+    args = {'target': 'shiori'}
+    if ghost_root:
+        args['ghost_name'] = ghost_root
+    r = mcp_tools_call('reload', args)
+    if r is None:
+        return False
+    if r.get('error'):
+        print(f'  重载失败：{r["error"]}')
+        return False
+    text = ''.join(c.get('text', '') for c in (r.get('result') or {}).get('content') or [])
+    print(f'  已触发重载{("：" + text.strip()) if text.strip() else ""}')
+    return True
+
+
+def _remove_with_retry(path, tries=15, delay=0.2):
+    """删文件；刚重载完旧模块可能仍被映射，短暂重试。返回是否已不存在。"""
+    import time
+    for i in range(tries):
+        try:
+            os.remove(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if i == tries - 1:
+                return False
+            time.sleep(delay)
+    return False
+
+
+def _try_copy(src, dst):
+    """尝试直接覆盖。成功 True；失败 False（通常是文件被映射着）。"""
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except OSError:
+        return False
+
+
+def _ssp_alive(port=9801, timeout=2.0):
+    """探测 SSP 的 MCP 端点是否在听。只说明“SSP 在跑”，不代表一定能重载成功。"""
+    import urllib.request, urllib.error
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mcp/help', timeout=timeout) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def deploy_dll(src, dst):
+    """先试直接覆盖；覆盖不了且 SSP 在跑时，改名补位、等调用方重载。
+
+    返回 (mode, bak)：
+        ('direct',  None)  直接覆盖成功 —— 文件没被占用，SSP 下次加载自然是新版
+        ('renamed', bak)   改了名、补了新文件 —— 必须重载才能生效
+    覆盖失败且 SSP 不在跑时抛 OSError。
+    """
+    import time
+    if _try_copy(src, dst):
+        print(f'  已复制（直接覆盖）→ {dst}')
+        return 'direct', None
+
+    if not _ssp_alive():
+        raise OSError('目标被占用，且 127.0.0.1:9801 无响应'
+                      '（SSP 未运行或 MCP 端点不可用）；请关闭占用该 DLL 的进程后重试')
+
+    bak = dst + '.bak'
+    # 上轮的备份可能还映射着（SSP 的重载走主线程，是异步的）：重试；
+    # 仍删不掉就换一个带时间戳的名字，避免 rename 因目标存在而失败。
+    if os.path.exists(bak) and not _remove_with_retry(bak):
+        bak = f'{bak}.{time.strftime("%Y%m%d-%H%M%S")}'
+    os.rename(dst, bak)                   # 已映射的文件允许改名
+    print(f'  目标被占用 → 旧文件改名为 {os.path.basename(bak)}')
+    try:
+        shutil.copy2(src, dst)
+    except OSError:
+        os.replace(bak, dst)              # 回滚，别把人格的 DLL 弄丢
+        raise
+    print(f'  已复制 → {dst}')
+    return 'renamed', bak
+
+
 if len(sys.argv) >= 2:
-    dst = sys.argv[1]
-    target_dir = dst if os.path.isdir(dst) else os.path.dirname(os.path.abspath(dst))
-    first_dst = os.path.join(target_dir, 'first.dll')
-    shutil.copy2(DLL_OUT, first_dst)
-    print(f'已复制 → {first_dst}')
+    paths = [a for a in sys.argv[1:] if not a.startswith('--')]
+    no_reload = '--no-reload' in sys.argv[1:]
+    if not paths:
+        print('用法：python patch_dll.py "<ghost master 目录>" [--no-reload]')
+    else:
+        dst = paths[0]
+        target_dir = dst if os.path.isdir(dst) else os.path.dirname(os.path.abspath(dst))
+        first_dst = os.path.join(target_dir, 'first.dll')
+        # <root>/ghost/master → 人格根目录（精确指定目标人格，避免多开时打错）
+        parent = os.path.dirname(os.path.abspath(target_dir))
+        ghost_root = os.path.dirname(parent) \
+            if os.path.basename(target_dir).lower() == 'master' \
+            and os.path.basename(parent).lower() == 'ghost' else None
+
+        try:
+            mode, bak = deploy_dll(DLL_OUT, first_dst)
+        except OSError as e:
+            print(f'  部署失败：{e}')
+            print(f'  构建产物仍在：{DLL_OUT}')
+            sys.exit(1)
+
+        if mode == 'direct':
+            print('  无需重载（文件没被占用，SSP 下次加载该人格时自然是新版）')
+        elif no_reload:
+            print('  已跳过重载（--no-reload）')
+            if bak:
+                print(f'  备份保留：{os.path.basename(bak)}（下次部署时会尝试清理）')
+        elif reload_shiori(ghost_root):
+            if bak:
+                if _remove_with_retry(bak):
+                    print(f'  已清理 {os.path.basename(bak)}')
+                else:
+                    print(f'  注意：{os.path.basename(bak)} 仍被占用，稍后可手动删除'
+                          f'（内容是上一版，不影响运行）')
+        elif bak:
+            print(f'  保留备份 {os.path.basename(bak)}（重载未完成）')
 
 print(f'  写入: {ok}  截断: {trunc}  跳过: {skip}')
