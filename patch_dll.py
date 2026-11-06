@@ -41,8 +41,9 @@ first.dll 汉化与兼容补丁 · 一键构建脚本
     0 公共工具     apply_patches / add_cave_section / PE 定位与读写 / gbk_bytes
 
 .cave 布局（A1 迁移版；详见 docs/补丁重构调查与规划.md §6）
-    0x0000-0x01EC  3 链接   桩1/桩2/前缀/响应缓冲
+    0x0000-0x0200  3 链接   桩1/桩2/前缀/响应缓冲
     0x0200-0x1E50  4 菜单   类名+dstr/关窗桩/桩B/桩A/helper/标志/缓存/CMD/CloseQuery/PENDING
+    0x1E50-0x1E90  1.x 资源串 homeurl（SHIORI 资源表重指向）
     0x2000-0x22BC  6.3 缩放 request/load/拖动/系统字体/CS_HREDRAW/DPI 数据
     0x2300-0x2690  6.1 退出 收尾/暂存/存根/类名/V7 桩+跳板/枚举回调/类名缓冲
     0x2810-0x39FC  6.4 IME band1（数据/CTS/SEL/安装/钩子/包装/字符串）
@@ -51,7 +52,7 @@ first.dll 汉化与兼容补丁 · 一键构建脚本
     0x6400-0x6A9C  6.2 键盘
     0x7500-0x7700  4 计时统一闸门（提交/退出/到点三条关闭路径共用一个桩）
     0x7700-0x7F60  6.5 ULW/WL（上屏桩/WndProc/掩码数据）
-    空闲区：0x1E50-0x2000、0x2690-0x2810、0x4E60-0x5860
+    空闲区：0x1EA0-0x2000、0x2690-0x2810、0x4E60-0x5860（其中 0x4E60 起已被 IME 站点解析占用）
 ===============================================================================
 """
 import csv, hashlib, os, sys, struct, shutil, unicodedata
@@ -299,20 +300,29 @@ LSTRASG_FUNC = 0x403C58            # Delphi 字符串赋值
 FALLBACK_STR = 0x48769C            # 兜底常量「\0\s0……\w8\w8\s4ん？」（翻译表改写）
 
 CAVE2_OFF = 0x20                   # 第二桩在 .cave 内的偏移
-PREFIX_OFF = 0x00B0                # 响应前缀常量（见 URL_RESP_PREFIX；C 区，紧贴桩2）
-BUF_DATA_OFF = 0x00D8              # 响应缓冲数据（rc/len 在 数据-8/-4；cap 0x114 → 止于 0x1EC）
+PREFIX_OFF = 0x00A6                # 响应前缀常量（紧接桩2：链接区按 桩1→桩2→前缀→缓冲 排列）
+BUF_DATA_OFF = 0x00F4              # 响应缓冲数据（rc/len 在其 -8/-4；0xF4+0x10C → 止于 0x200）
 # RSS 锚点响应前缀：
-#   \C               → 追记到"当前气球"（不开始新一轮 talk → 气泡不关！）
-#   \![open,browser, → 打开浏览器（后接 URL，桩里再补 ']'）
-# 注：社区标准写法为 \C + 关超时 ×2 + \j[；实测去掉两个超时设置、改用
-#     \![open,browser, 无可见副作用，故采用此简式（见《链接机制说明及补丁.md》§3）。
-URL_RESP_PREFIX = rb'\C\![open,browser,'
+#   \C                        → 追记到"当前气球"（不开始新一轮 talk → 气泡不关！）
+#   \![set,choicetimeout,-1]  → 关掉选择超时（否则新闻列表翻到一半会自己消失）
+#   \![set,balloontimeout,-1] → 关掉气球超时（气泡不会被自动关掉）
+#   \![open,browser,          → 打开浏览器（后接 URL，桩里再补 ']'）
+# 演进：f759485 曾去掉两个超时设置、简化成 \C\![open,browser,；但 RSS 新闻是
+#   带超时的选择支，去掉后翻几页就超时中断 → 现在恢复两个超时设置，同时保留
+#   \![open,browser,（比旧的 \j[ 更明确，走 SSP 设定里的浏览器）。
+URL_RESP_PREFIX = (rb'\C'
+                   rb'\![set,choicetimeout,-1]'
+                   rb'\![set,balloontimeout,-1]'
+                   rb'\![open,browser,')
+# 缓冲容量里还要放 URL、']' 和结尾 NUL；超长 URL 走兜底分支，避免越界。
+BUF_CAP = 0x200 - BUF_DATA_OFF      # 数据区上界 = 0x200（类名串起始）
+URL_MAX = BUF_CAP - len(URL_RESP_PREFIX) - 2
 
 # ============================================================================
 # 3.2 / 4 / 5 共享：.cave 数据区布局与常量
 # ============================================================================
 # .cave 布局（2026 迁移版 A1；改动后应做区间重叠检查）：
-#   3 链接   0x0000 链接化桩 | 0x0020 RSS桩 | 0x00B0 前缀 | 0x00D0 桩2 缓冲(rc/len@0xD0，数据@0xD8-0x1EC)
+#   3 链接   0x0000 链接化桩 | 0x0020 RSS桩 | 0x00A6 前缀（67B） | 0x00F4 桩2 缓冲(数据@0xF4-0x200)
 #   4 菜单   0x0200 类名串+dstr(类名0x200/0x210/0x220；dstr rc@0x230/len@0x234/数据@0x238/值@0x241)
 #           0x0300 关窗体辅助桩 | 0x03A0 双击判定桩B | 0x04A0 响应监控桩A | 0x0700 取消辅助函数
 #           0x0800 标志组(SEARCH/PENDING/GAMELEFT/EYEBUSY) | 0x0818 菜单缓存(rc/len@0x81C/数据@0x820，cap 0x6E0)
@@ -434,7 +444,7 @@ def _build_url_stub(rva):
     b += b'\x81\x3F\x68\x74\x74\x70'                  # 20: cmp dword [edi],'http'
     b += b'\x0F\x85' + rel32(fb_target, 28)           # 26: jne .fb
     b += b'\x8B\x4F\xFC'                              # 32: mov ecx,[edi-4]
-    b += b'\x81\xF9\x00\x01\x00\x00'                  # 35: cmp ecx,0x100
+    b += b'\x81\xF9' + struct.pack('<I', URL_MAX)     # 35: cmp ecx,URL_MAX（超长走兜底）
     b += b'\x0F\x87' + rel32(fb_target, 43)           # 41: ja .fb
     # 注意：ebx = 本桩内 pop 的地址 = 桩VA+8 = 节VA + (CAVE2_OFF+8)，
     # 所以指向节内偏移时要减去 (CAVE2_OFF + 8)。
@@ -1683,11 +1693,33 @@ def _build_dc_status_stub(rva):
 
 
 # ----------------------------------------------------------------------------
+# 1.3' SHIORI 资源 homeurl：把资源分发表里的常量指针改到 .cave 里的长 URL
+# ----------------------------------------------------------------------------
+# 背景：网络更新在人格【运行中】会向 SHIORI 要 homeurl（SPUpdate_GetHomeURLFromSHIORI），
+#   只有人格未运行时（资源管理器/属性系统）才读 descript.txt 的 homeurl。
+#   first.dll 把原开发站的地址写死在资源表里，运行中的主菜单/右键菜单更新永远指向
+#   早已消失的 http://sakura.mikage.to/files/sakura/ —— 改 descript.txt 无效。
+# 做法：原串槽位只有 37 字节，新地址放不下，所以把新串放进 .cave，改资源表里的
+#   4 字节立即数指向它（0x4A7ADE: mov edx, imm32，操作码 BA 保留，只改立即数）。
+# 该立即数在 .reloc 里有 HIGHLOW 条目（RVA 0xA7ADF），重定位时会一并修正。
+HOMEURL_URL = 'https://jiayuyangx.github.io/sakura-restore/'
+HOMEURL_PTR_OFF = 0xA6EDE               # 文件偏移（VA 0x4A7ADE = mov edx, imm32）
+HOMEURL_PTR_ORIG = bytes.fromhex('BA E8 7C 4A 00')    # → 原串 VA 0x4A7CE8
+HOMEURL_CAVE_OFF = 0x1E58               # 新串文字区（0x1E50-0x1E90 资源串区，紧随菜单块之后）
+
+
+def _build_homeurl_record(url):
+    """Delphi 长字符串布局：[-8]=refcount(-1)、[-4]=len、[0]=文字（补齐到 4 字节）。"""
+    s = url.encode('gbk')
+    return struct.pack('<II', 0xFFFFFFFF, len(s)) + s + b'\x00' * ((-len(s)) % 4)
+
+
+# ----------------------------------------------------------------------------
 # 应用器：把 3/4/5 类的全部 .cave 桩写入新追加节
 # ----------------------------------------------------------------------------
 def patch_extra_link(data: bytearray) -> bytearray:
     """应用全部 .cave 补丁：链接化 / RSS 打开浏览器 / 响应监控（搜索/视力标志、
-    取消输入框、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定。"""
+    取消输入框、退出收尾）/ 关游戏窗体 / CloseQuery 放行 / 双击判定 / homeurl 重指向。"""
     blob = bytearray(IME_CAVE_SIZE)  # .cave 全节 0x8000：C/D/E/F1/F2 区 + IME/键盘/ULW 固定层
     rva = add_cave_section(data, bytes(blob))
     e = _u32(data, 0x3C)
@@ -1787,6 +1819,18 @@ def patch_extra_link(data: bytearray) -> bytearray:
         raise RuntimeError('双击补丁：入口原始字节不匹配')
     data[off:off + 8] = (b'\xE9' + struct.pack(
         '<i', cave_va + CAVE_B_OFF - (DC_ENTRY_VA + 5))) + b'\x90' * 3
+
+    # 1.3' SHIORI 资源 homeurl → cave 里的新 URL（网络更新地址）
+    url_rec = _build_homeurl_record(HOMEURL_URL)
+    url_off = HOMEURL_CAVE_OFF - 8
+    if any(data[raw + url_off: raw + url_off + len(url_rec)]):
+        raise RuntimeError('homeurl 补丁：cave 目标区非空')
+    data[raw + url_off: raw + url_off + len(url_rec)] = url_rec
+    if bytes(data[HOMEURL_PTR_OFF:HOMEURL_PTR_OFF + 5]) != HOMEURL_PTR_ORIG:
+        raise RuntimeError('homeurl 补丁：资源表指针原始字节不匹配')
+    data[HOMEURL_PTR_OFF + 1:HOMEURL_PTR_OFF + 5] = struct.pack(
+        '<I', cave_va + HOMEURL_CAVE_OFF)
+    print(f'  SHIORI homeurl → {HOMEURL_URL}（cave+0x{HOMEURL_CAVE_OFF:X}）')
 
     print(f'补丁已应用: 链接化/RSS/响应监控/关窗体/双击判定/打字定向屏蔽/重力语中文化 @ RVA 0x{rva:X}')
     return data

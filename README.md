@@ -49,6 +49,7 @@
 - 字符串替换（code、rsrc、字体、问答游戏答案）
 - AITXT替换
 - DFM Font.Charset 替换为 GBK
+- 修改更新检查 URL
 
 #### SHIORI 兼容性修复
 
